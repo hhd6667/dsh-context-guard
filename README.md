@@ -69,6 +69,8 @@ DSH's context ring divides measured pressure by the ceiling stored in the sessio
 
 While the ring and the selected model disagree, the plugin shows a small chip next to **Auto switch** with the ceiling that actually applies now and your usage against it (for example `42% · 262K`; it turns red and reads `118% · over 262K` once usage passes that ceiling). Hovering it names both values. The chip disappears on its own as soon as the next request updates the ring.
 
+Because that disagreement is invisible for a second when two models share a ceiling, and because it ends the moment any request runs, the chip also stays up for about 12 seconds after **any** model switch as a neutral-colored confirmation of the ceiling now in effect. No chip means the ring already matches the selected model.
+
 ## Install
 
 The package is a web-profile bundle. These steps describe a local profile installation from a copy of the repository; DSH may provide other plugin installation mechanisms in future versions.

@@ -103,6 +103,10 @@ window.__ModuleLoader__.load({
         zh: 'DSH 上下文圆环的上限（{ring}）来自最近一次真实请求，还没有按当前模型 {model} 的 {window} 重新计算。\n按 {window} 计算，当前占用约 {percent}%。发出下一条消息后圆环会自动更新。',
         en: 'The DSH context ring still shows the ceiling from the last real request ({ring}); it has not been recalculated for the current model {model} ({window}) yet.\nAgainst {window}, usage is about {percent}%. The ring refreshes on your next message.'
       },
+      'auto.limitChipAppliedTip': {
+        zh: '当前模型 {model} 的上下文上限是 {window}，按它计算当前占用约 {percent}%。\n刚切换过模型，所以这里先确认一次上限；几秒后自动隐藏。',
+        en: 'The current model {model} has a {window} context ceiling; usage against it is about {percent}%.\nShown briefly to confirm the ceiling after a model switch; it hides on its own.'
+      },
       'warn.title': { zh: '上下文可能超过目标模型', en: 'Context may exceed the target model' },
       'warn.cancel': { zh: '取消', en: 'Cancel' },
       'warn.stay': { zh: '保持原模型', en: 'Keep current model' },
@@ -763,8 +767,11 @@ function createAutoSettings(options) {
     titleDot.style.background = active ? '#15803d' : '#94a3b8'
   }
   // Render the "limit that applies now" chip from getMeterNotice(). The host
-  // returns null whenever the ring already agrees with the selected model (or
-  // either side is unknown), which keeps this invisible in the normal case.
+  // returns null when there is nothing to say: the ring already agrees AND no
+  // model switch just happened. `info.stale` distinguishes "the ring still shows
+  // the previous ceiling" from "this is the ceiling after a switch", so the chip
+  // can look like a warning in the first case and like a confirmation in the
+  // second.
   function updateMeter() {
     if (disposed) return
     var info = null
@@ -777,10 +784,11 @@ function createAutoSettings(options) {
     }
     var percent = typeof info.percent === 'number' && isFinite(info.percent) ? info.percent : null
     var over = percent != null && percent >= 100
-    meterChip.setAttribute('data-state', over ? 'over' : 'stale')
+    var stale = info.stale !== false
+    meterChip.setAttribute('data-state', over ? 'over' : stale ? 'stale' : 'applied')
     // The launcher lives in DSH's own toolbar, so pick colors per theme instead
-    // of trusting one paletted CSS variable: amber for "different ceiling",
-    // red once the new ceiling is already exceeded.
+    // of trusting one paletted CSS variable: amber while the ring is stale, red
+    // once the new ceiling is already exceeded, neutral for a confirmation.
     var dark = false
     try { if (typeof detectTheme === 'function') dark = detectTheme() === 'dark' } catch (_) {}
     if (over) {
@@ -788,11 +796,16 @@ function createAutoSettings(options) {
       meterChip.style.color = dark ? '#fca5a5' : '#b91c1c'
       meterChip.style.background = dark ? 'rgba(248,113,113,.14)' : '#fef2f2'
       meterDot.style.background = dark ? '#f87171' : '#dc2626'
-    } else {
+    } else if (stale) {
       meterChip.style.borderColor = dark ? '#fbbf24' : '#fcd34d'
       meterChip.style.color = dark ? '#fcd34d' : '#b45309'
       meterChip.style.background = dark ? 'rgba(251,191,36,.12)' : '#fffbeb'
       meterDot.style.background = dark ? '#fbbf24' : '#f59e0b'
+    } else {
+      meterChip.style.borderColor = dark ? '#475569' : '#cbd5e1'
+      meterChip.style.color = dark ? '#cbd5e1' : '#475569'
+      meterChip.style.background = dark ? 'rgba(148,163,184,.12)' : '#f8fafc'
+      meterDot.style.background = dark ? '#94a3b8' : '#64748b'
     }
     meterText.textContent = percent == null
       ? fill(T('auto.limitChip'), { window: fmtShort(info.window) })
@@ -800,7 +813,7 @@ function createAutoSettings(options) {
         percent: String(percent),
         window: fmtShort(info.window)
       })
-    meterChip.title = fill(T('auto.limitChipTip'), {
+    meterChip.title = fill(T(stale ? 'auto.limitChipTip' : 'auto.limitChipAppliedTip'), {
       ring: info.ringWindow ? fmtShort(info.ringWindow) : '?',
       model: info.route || '',
       window: fmtShort(info.window),
@@ -1317,6 +1330,7 @@ function createAutoEngine(o) {
       var suppress = new Map()       // sessionId -> routeKey user explicitly chose to allow
       var holding = new Set()        // sessionId -> an assertSelection() loop owns the selection
       var epoch = new Map()          // monotonic decision counter; never reset on unbind
+      var changedAt = new Map()      // sessionId -> Date.now() of the last observed model change
       var disposed = false
       var autoEngine = null
       var autoSettings = null
@@ -1382,6 +1396,13 @@ function createAutoEngine(o) {
       // so the ring keeps the previous model's ceiling until the next message is
       // sent. Report the disagreement so the toolbar can show the limit that
       // actually applies to the model selected now.
+      //
+      // The disagreement itself is invisible for a second or so when the new
+      // model happens to share the ceiling, and it ends the moment any request
+      // runs (including the next assistant turn). Either way a ceiling the user
+      // never got to read is useless, so a fresh switch also keeps the chip up
+      // for NOTICE_MS, labelled as already applied.
+      var NOTICE_MS = 12000
       function meterNotice(sessionId) {
         try {
           var b = sessions.binding(sessionId)
@@ -1394,7 +1415,9 @@ function createAutoEngine(o) {
           var sel = currentSelection(sessionId)
           if (!sel || !sel.provider || !sel.model) return null
           var window = resolveWindowWithSettings(sel)
-          if (typeof window !== 'number' || !(window > 0) || window === ringWindow) return null
+          if (typeof window !== 'number' || !(window > 0)) return null
+          var stale = window !== ringWindow
+          if (!stale && !(Date.now() - (changedAt.get(sessionId) || 0) < NOTICE_MS)) return null
           var used = ps.projectedTokens != null ? ps.projectedTokens : ps.pressureTokens
           var percent = typeof used === 'number' && isFinite(used) && used >= 0
             ? Math.min(999, Math.round(used / window * 100))
@@ -1405,7 +1428,8 @@ function createAutoEngine(o) {
             route: routeKey(sel),
             window: window,
             ringWindow: ringWindow,
-            percent: percent
+            percent: percent,
+            stale: stale
           }
         } catch (_) { return null }
       }
@@ -1552,6 +1576,9 @@ function createAutoEngine(o) {
           }
           // No change from what the user last confirmed: nothing to do.
           if (prevKey === key) return
+          // A real model change: remember when, so the toolbar chip can confirm
+          // the new ceiling even when both models share one.
+          changedAt.set(sessionId, Date.now())
 
           var fromSel = committedSel.get(sessionId)
           var usage = pressure && (pressure.projectedTokens != null ? pressure.projectedTokens : pressure.pressureTokens)
@@ -1668,6 +1695,7 @@ function createAutoEngine(o) {
         pending.delete(sessionId)
         suppress.delete(sessionId)
         holding.delete(sessionId)
+        changedAt.delete(sessionId)
         epoch.set(sessionId, (epoch.get(sessionId) || 0) + 1)
       }
 
@@ -1795,7 +1823,7 @@ function createAutoEngine(o) {
         try { if (domObserver) domObserver.disconnect() } catch (_) {}
         for (var s of Array.from(stops.values())) try { s() } catch (_) {}
         stops.clear(); committed.clear(); committedSel.clear(); pending.clear(); suppress.clear()
-        holding.clear(); epoch.clear()
+        holding.clear(); epoch.clear(); changedAt.clear()
         closeModal()
       }
     }
