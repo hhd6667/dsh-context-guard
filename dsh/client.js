@@ -96,6 +96,13 @@ window.__ModuleLoader__.load({
       'auto.catalogRejected': { zh: '加载模型目录失败', en: 'Failed to load the model catalog' },
       'auto.settingsInitFailed': { zh: '自动切换设置界面初始化失败', en: 'Automatic failover settings failed to initialize' },
       'auto.unknownError': { zh: '未知错误', en: 'Unknown error' },
+      'auto.limitChip': { zh: '上限 {window}', en: 'limit {window}' },
+      'auto.limitChipStale': { zh: '{percent}% · 上限 {window}', en: '{percent}% · {window}' },
+      'auto.limitChipOver': { zh: '{percent}% · 超过 {window}', en: '{percent}% · over {window}' },
+      'auto.limitChipTip': {
+        zh: 'DSH 上下文圆环的上限（{ring}）来自最近一次真实请求，还没有按当前模型 {model} 的 {window} 重新计算。\n按 {window} 计算，当前占用约 {percent}%。发出下一条消息后圆环会自动更新。',
+        en: 'The DSH context ring still shows the ceiling from the last real request ({ring}); it has not been recalculated for the current model {model} ({window}) yet.\nAgainst {window}, usage is about {percent}%. The ring refreshes on your next message.'
+      },
       'warn.title': { zh: '上下文可能超过目标模型', en: 'Context may exceed the target model' },
       'warn.cancel': { zh: '取消', en: 'Cancel' },
       'warn.stay': { zh: '保持原模型', en: 'Keep current model' },
@@ -255,8 +262,12 @@ window.__ModuleLoader__.load({
       if (typeof built === 'number' && built > 0) return built
       return null
     }
-    function loadSettingsWindows() {
-      return refreshSettingsWindows(remote && remote.settings)
+    // The settings namespace is an ARGUMENT, not a closure lookup: this helper
+    // lives at factory scope, where `remote` does not exist. Reading it here
+    // threw "remote is not defined", which aborted getCatalog() and surfaced as
+    // "model catalog failed to load".
+    function loadSettingsWindows(ns) {
+      return refreshSettingsWindows(ns)
     }
 
     // ---- plain-DOM modal (opaque, theme-aware, accessible) -------------
@@ -587,6 +598,11 @@ function createAutoSettings(options) {
     return node
   }
   function message(error) { return error && error.message ? String(error.message) : String(error || T('auto.unknownError')) }
+  function fill(template, vars) {
+    return String(template == null ? '' : template).replace(/\{(\w+)\}/g, function (_, name) {
+      return vars && vars[name] != null ? String(vars[name]) : ''
+    })
+  }
   function clone(cfg) {
     return {
       enabled: !!(cfg && cfg.enabled),
@@ -609,8 +625,15 @@ function createAutoSettings(options) {
   }
   function key(c) { return JSON.stringify([c.provider, c.model]) }
   function fmtShort(n) {
-    if (n >= 1000000 && n % 100000 === 0) return String(n / 1000000) + 'M'
-    if (n >= 1000) return String(Math.round(n / 1000)) + 'K'
+    // 1048576 must read as "1M", not "1049K": round to one decimal and drop a
+    // trailing zero so megabyte windows stay recognizable.
+    if (n >= 1000000) {
+      var millions = Math.round(n / 100000) / 10
+      return (millions % 1 === 0 ? String(millions) : millions.toFixed(1)) + 'M'
+    }
+    // Round DOWN for kilotokens: a 32768-token window must read "32K", never
+    // "33K", or the ceiling understates how soon the context will overflow.
+    if (n >= 1000) return String(Math.floor(n / 1000)) + 'K'
     return String(n)
   }
 
@@ -621,6 +644,21 @@ function createAutoSettings(options) {
   launcherHost.style.cssText = 'display:inline-flex;align-items:center;flex:none;pointer-events:auto;'
   var launcherRoot = typeof launcherHost.attachShadow === 'function' ? launcherHost.attachShadow({ mode: 'open' }) : launcherHost
   launcherRoot.appendChild(launcher)
+  // The DSH context ring takes its ceiling from the session's newest real
+  // `request/context` record, so after a model switch it keeps showing the
+  // PREVIOUS model's window until the next message is sent — which looks like
+  // the switch did not stick. While the ring and the selected model disagree,
+  // show the limit that actually applies now; it hides itself as soon as the
+  // ring catches up.
+  var meterChip = el('span')
+  meterChip.style.cssText = 'display:none;align-items:center;gap:5px;height:22px;margin-left:6px;padding:0 8px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2,#fbbf24);background:var(--dsw-alias-bg-base,#fffbeb);color:var(--dsw-alias-label-secondary,#b45309);font:600 11px/1 system-ui,sans-serif;white-space:nowrap;cursor:default;pointer-events:auto;font-variant-numeric:tabular-nums;'
+  meterChip.setAttribute('role', 'status')
+  var meterDot = el('span')
+  meterDot.style.cssText = 'width:6px;height:6px;border-radius:50%;background:#f59e0b;flex:none;'
+  var meterText = el('span')
+  meterChip.appendChild(meterDot)
+  meterChip.appendChild(meterText)
+  launcherRoot.appendChild(meterChip)
   // Use the native composer's file input as an anchor, next to its + control.
   // Keep the dialog in the body so composer overflow cannot clip it.
   function mountLauncher() {
@@ -723,6 +761,52 @@ function createAutoSettings(options) {
     launcher.style.borderColor = active ? '#15803d' : 'var(--dsw-alias-border-l2,#cbd5e1)'
     launcher.title = active ? T('auto.enabledTip') : T('auto.disabledTip')
     titleDot.style.background = active ? '#15803d' : '#94a3b8'
+  }
+  // Render the "limit that applies now" chip from getMeterNotice(). The host
+  // returns null whenever the ring already agrees with the selected model (or
+  // either side is unknown), which keeps this invisible in the normal case.
+  function updateMeter() {
+    if (disposed) return
+    var info = null
+    try { info = typeof options.getMeterNotice === 'function' ? options.getMeterNotice() : null } catch (_) { info = null }
+    if (!info || !(typeof info.window === 'number' && info.window > 0)) {
+      meterChip.style.display = 'none'
+      meterChip.removeAttribute('data-state')
+      meterChip.title = ''
+      return
+    }
+    var percent = typeof info.percent === 'number' && isFinite(info.percent) ? info.percent : null
+    var over = percent != null && percent >= 100
+    meterChip.setAttribute('data-state', over ? 'over' : 'stale')
+    // The launcher lives in DSH's own toolbar, so pick colors per theme instead
+    // of trusting one paletted CSS variable: amber for "different ceiling",
+    // red once the new ceiling is already exceeded.
+    var dark = false
+    try { if (typeof detectTheme === 'function') dark = detectTheme() === 'dark' } catch (_) {}
+    if (over) {
+      meterChip.style.borderColor = dark ? '#f87171' : '#fca5a5'
+      meterChip.style.color = dark ? '#fca5a5' : '#b91c1c'
+      meterChip.style.background = dark ? 'rgba(248,113,113,.14)' : '#fef2f2'
+      meterDot.style.background = dark ? '#f87171' : '#dc2626'
+    } else {
+      meterChip.style.borderColor = dark ? '#fbbf24' : '#fcd34d'
+      meterChip.style.color = dark ? '#fcd34d' : '#b45309'
+      meterChip.style.background = dark ? 'rgba(251,191,36,.12)' : '#fffbeb'
+      meterDot.style.background = dark ? '#fbbf24' : '#f59e0b'
+    }
+    meterText.textContent = percent == null
+      ? fill(T('auto.limitChip'), { window: fmtShort(info.window) })
+      : fill(T(over ? 'auto.limitChipOver' : 'auto.limitChipStale'), {
+        percent: String(percent),
+        window: fmtShort(info.window)
+      })
+    meterChip.title = fill(T('auto.limitChipTip'), {
+      ring: info.ringWindow ? fmtShort(info.ringWindow) : '?',
+      model: info.route || '',
+      window: fmtShort(info.window),
+      percent: percent == null ? '?' : String(percent)
+    })
+    meterChip.style.display = 'inline-flex'
   }
   function showStatus() {
     if (disposed) return
@@ -907,6 +991,7 @@ function createAutoSettings(options) {
     search.placeholder = T('auto.search')
     search.setAttribute('aria-label', T('auto.search'))
     updateLauncher()
+    updateMeter()
     if (opened) { renderCandidates(); renderCatalog(); showStatus() }
   }
   function refresh() {
@@ -922,6 +1007,7 @@ function createAutoSettings(options) {
       enabled.disabled = !sessionId
       enabled.setAttribute('aria-checked', draft.enabled ? 'true' : 'false')
       updateLauncher()
+      updateMeter()
       sessionTag.textContent = sessionId || T('auto.noSession')
       sessionTag.title = sessionId || ''
       if (opened && changed) { renderCandidates(); renderCatalog() }
@@ -964,6 +1050,7 @@ function createAutoSettings(options) {
     mount: mountLauncher,
     localize: localize,
     updateStatus: showStatus,
+    updateMeter: updateMeter,
     dispose: function () {
       if (disposed) return
       close(); disposed = true; ++fetchEpoch
@@ -1244,6 +1331,15 @@ function createAutoEngine(o) {
           : null
       }
 
+      // The Models settings namespace, also read only through the injected scope.
+      // `remote.settings` needs its own dotted inject() entry just like
+      // `remote.session`, so access is guarded instead of assumed.
+      function remoteSettingsNS() {
+        return remote && remote.settings && typeof remote.settings.describe === 'function'
+          ? remote.settings
+          : null
+      }
+
       function selectModel(sessionId, sel) {
         try {
           var ns = remoteNS()
@@ -1277,6 +1373,40 @@ function createAutoEngine(o) {
           var f = b && b.session && b.session.projections && b.session.projections.faceOf('modelSelection')
           var s = f ? f.getSnapshot() : null
           return (s && (s.next || s.lastUsed)) || null
+        } catch (_) { return null }
+      }
+
+      // DSH's context ring divides measured pressure by `contextPressure.contextWindow`,
+      // and THAT value only comes from the newest real `request/context` record. A
+      // model switch writes `model/selection` immediately but not `request/context`,
+      // so the ring keeps the previous model's ceiling until the next message is
+      // sent. Report the disagreement so the toolbar can show the limit that
+      // actually applies to the model selected now.
+      function meterNotice(sessionId) {
+        try {
+          var b = sessions.binding(sessionId)
+          var pf = face(b, 'contextPressure')
+          var ps = pf ? pf.getSnapshot() : null
+          var ringWindow = ps && typeof ps.contextWindow === 'number' && ps.contextWindow > 0
+            ? ps.contextWindow
+            : null
+          if (ringWindow === null) return null
+          var sel = currentSelection(sessionId)
+          if (!sel || !sel.provider || !sel.model) return null
+          var window = resolveWindowWithSettings(sel)
+          if (typeof window !== 'number' || !(window > 0) || window === ringWindow) return null
+          var used = ps.projectedTokens != null ? ps.projectedTokens : ps.pressureTokens
+          var percent = typeof used === 'number' && isFinite(used) && used >= 0
+            ? Math.min(999, Math.round(used / window * 100))
+            : null
+          return {
+            provider: sel.provider,
+            model: sel.model,
+            route: routeKey(sel),
+            window: window,
+            ringWindow: ringWindow,
+            percent: percent
+          }
         } catch (_) { return null }
       }
 
@@ -1510,7 +1640,13 @@ function createAutoEngine(o) {
         try { binding = sessions.binding(sessionId) } catch (_) { binding = undefined }
         if (!binding || !binding.session || !binding.session.projections) return
 
-        var tick = guard(function () { evaluate(sessionId, binding) })
+        var tick = guard(function () {
+          evaluate(sessionId, binding)
+          // Keep the toolbar's "limit that applies now" chip in step with the
+          // projections: it appears on the switch and clears once the ring's own
+          // `request/context` window catches up.
+          if (autoSettings) autoSettings.updateMeter()
+        })
         var unsubs = []
         var mf = face(binding, 'modelSelection')
         var pf = face(binding, 'contextPressure')
@@ -1592,10 +1728,14 @@ function createAutoEngine(o) {
           getStatusPhase: function (id) { return autoEngine.getStatus(id).phase },
           t: tr,
           resolveKnownWindow: resolveWindowWithSettings,
+          getMeterNotice: function () {
+            var id = activeDomSessionId()
+            return id ? meterNotice(id) : null
+          },
           getCatalog: function () {
             // Refresh configured windows first: opening the panel is exactly
             // when the user expects the window column to show real values.
-            return loadSettingsWindows().then(function () {
+            return loadSettingsWindows(remoteSettingsNS()).then(function () {
               var ns = remoteNS()
               if (!ns || typeof ns.modelCatalog !== 'function') throw new Error(tr('auto.catalogUnavailable'))
               return ns.modelCatalog()
@@ -1610,7 +1750,13 @@ function createAutoEngine(o) {
       // Warm the configured-window map once, in the background: automatic
       // failover must be able to size candidates even when the settings panel
       // was never opened. Failure just leaves the built-in table in charge.
-      Promise.resolve().then(loadSettingsWindows).catch(function () {})
+      Promise.resolve().then(function () {
+        return loadSettingsWindows(remoteSettingsNS())
+      }).then(function () {
+        // The chip needs a resolved window for the selected model, and settings
+        // may land after the first paint: refresh it once they are in.
+        if (autoSettings) autoSettings.updateMeter()
+      }).catch(function () {})
       reconcileCurrent()
       // The client plugin can start a few frames before Conversation mounts its
       // root. Retry briefly so the first opened session is captured even when

@@ -1,6 +1,6 @@
 {
   "name": "dsh-context-guard",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Bilingual DSH web client plugin: guard risky model switches and automatically fail over to user-chosen models on quota/rate-limit errors.",
   "type": "module",
   "license": "GPL-3.0-only",

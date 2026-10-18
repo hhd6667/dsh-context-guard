@@ -63,6 +63,12 @@ If a model cannot be resolved:
 
 A typed override must be the model's **context window**, not its maximum output length. Known examples in the shipped table include `deepseek-flash` at 1,000,000 tokens and `ark-code-latest` at 262,144 tokens.
 
+### The ring ceiling after a switch
+
+DSH's context ring divides measured pressure by the ceiling stored in the session's newest real request (`request/context`). A model switch does not write that record — it only changes the saved selection — so for a moment after a switch the ring keeps showing the **previous** model's ceiling, even though the switch already succeeded.
+
+While the ring and the selected model disagree, the plugin shows a small chip next to **Auto switch** with the ceiling that actually applies now and your usage against it (for example `42% · 262K`; it turns red and reads `118% · over 262K` once usage passes that ceiling). Hovering it names both values. The chip disappears on its own as soon as the next request updates the ring.
+
 ## Install
 
 The package is a web-profile bundle. These steps describe a local profile installation from a copy of the repository; DSH may provide other plugin installation mechanisms in future versions.
@@ -110,6 +116,7 @@ The package is a web-profile bundle. These steps describe a local profile instal
 - The toolbar button is green when failover is enabled for that session and uses its normal appearance when disabled.
 - Leave “Window tokens” blank whenever the row already shows a detected value (for example `262144 auto` or `· 262K`). Only type a value when the row says the window is unknown, or when the detected value is wrong for that provider.
 - Only the currently displayed conversation is observed. Leaving the page or session cancels an in-flight automatic action.
+- Right after a switch, trust the chip next to **Auto switch** rather than the ring: the ring only reloads its ceiling when the next request is sent.
 
 ## Limitations
 
@@ -119,6 +126,7 @@ The package is a web-profile bundle. These steps describe a local profile instal
 - If the exhausted model cannot run `/compact`, the plugin will not force an oversized prompt into a smaller candidate; it tries safer candidates and then stops.
 - Only the open page is protected. No service worker or background process continues after the page closes.
 - `localStorage` is per browser/profile and does not synchronize across browsers, machines, or incognito sessions.
+- A browser plugin cannot append session records, so it cannot fix the ring's ceiling itself — it can only show the correct value while the two disagree.
 - The local model-window table requires maintenance when providers introduce new models.
 
 ## Uninstall
