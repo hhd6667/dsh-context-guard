@@ -47,20 +47,21 @@ Failover is disabled by default. Settings are stored per session in the browser'
 
 ## Context windows
 
-The browser model catalog intentionally does not expose an authoritative per-model `contextWindow`; it provides identity and metadata fields but not the context limit. The plugin therefore keeps a small local table in `DEFAULTS` near the top of [`dsh/client.js`](dsh/client.js).
+The browser model catalog does not carry a per-model `contextWindow`. The plugin resolves a window from these sources, in order:
 
-Resolution uses:
+1. **A value you typed in the candidate row** (highest priority; blank uses the detected value).
+2. **The windows DSH already resolved for its own Models settings** — read once, read-only, through `remote.settings.describe()`. This covers provider profiles with explicit `contextWindow` entries and adapter defaults, and is refreshed when the panel opens.
+3. **The shipped table** in `DEFAULTS` near the top of [`dsh/client.js`](dsh/client.js), keyed by exact `provider/model`, then model ID, then conservative substring patterns.
+4. If nothing resolves, the window stays **unknown**.
 
-1. exact `provider/model` overrides;
-2. model ID;
-3. conservative substring patterns.
+Configured or detected windows are shown in the candidate row as a placeholder (`262144 auto`) and next to each catalog result (`· 262K`), so you can see what will be used before typing anything.
 
 If a model cannot be resolved:
 
 - the manual context guard does **not** block it, avoiding false alarms on an unrecognized 1M model;
-- automatic failover does **not** use it as a safe candidate unless you enter a real context-window value in settings.
+- automatic failover does **not** use it as a safe candidate unless you enter a real context-window value in the row.
 
-The override must be the model's **context window**, not its maximum output length. Known examples in the current build include `deepseek-flash` at 1,000,000 tokens and `ark-code-latest` at 262,144 tokens.
+A typed override must be the model's **context window**, not its maximum output length. Known examples in the shipped table include `deepseek-flash` at 1,000,000 tokens and `ark-code-latest` at 262,144 tokens.
 
 ## Install
 
@@ -107,7 +108,7 @@ The package is a web-profile bundle. These steps describe a local profile instal
 - Switch models normally. The warning appears only when the current context is close to or above the target model's threshold.
 - Click **Auto switch** in the composer toolbar to configure failover candidates for the conversation currently displayed.
 - The toolbar button is green when failover is enabled for that session and uses its normal appearance when disabled.
-- Leave “Window tokens” blank for known models. Enter the actual context window for unknown models.
+- Leave “Window tokens” blank whenever the row already shows a detected value (for example `262144 auto` or `· 262K`). Only type a value when the row says the window is unknown, or when the detected value is wrong for that provider.
 - Only the currently displayed conversation is observed. Leaving the page or session cancels an in-flight automatic action.
 
 ## Limitations
