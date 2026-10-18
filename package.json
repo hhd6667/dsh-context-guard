@@ -1,0 +1,16 @@
+{
+  "name": "dsh-context-guard",
+  "version": "0.1.0",
+  "description": "DSH web client plugin: warn before switching a large-context session to a smaller model, optionally compact first, and fail over to user-chosen models on quota/rate-limit errors.",
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "exports": {
+    ".": "./dsh/index.js",
+    "./client": "./dsh/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "inject": [], "platform": "web", "immediately": true }
+  }
+}

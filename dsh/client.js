@@ -1,0 +1,1243 @@
+// dsh-context-guard — DSH web client model/context guard.
+// Copyright (C) 2026 dsh-context-guard contributors
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Browser half of dsh-context-guard.
+//
+// Problem: switching a session that grew a large context on a 1M model to a
+// smaller model (e.g. ark-code, 256K) does NOT fail at switch time — it fails
+// on the NEXT request, when the oversized prompt is sent. This plugin watches
+// each bound session's projections and, the moment the selected model changes
+// to one whose window the current context already exceeds, offers to run
+// `/compact` first.
+//
+// Why a local window table: the browser model catalog (session/modelCatalog)
+// deliberately strips per-model contextWindow — its wire schema keeps only
+// id/name/description/reasoning — so only the host LLM registry knows it. We
+// therefore keep a local table keyed primarily by MODEL ID (a window is a
+// property of the model, not of the provider prefix that exposes it), with
+// exact "provider/model" overrides and substring patterns. A model we cannot
+// resolve is NOT blocked: a permissive miss beats a false alarm on a 1M model.
+//
+// Zero-dependency, hand-written lazy-CJS bundle protocol (same stance as
+// @liustack/modlens): no React, no build step, plain DOM modal.
+window.__ModuleLoader__.load({
+  id: 'dsh-context-guard',
+  factory: (require) => {
+    var module = { exports: {} }
+    var exports = module.exports
+
+    // Context window is a property of the MODEL, not of the provider route —
+    // the same model (e.g. deepseek-flash) is exposed under many provider
+    // prefixes (provider-a / provider-b / ...),
+    // all sharing its 1M window. The browser catalog strips contextWindow, so
+    // we keep a local table keyed primarily by MODEL ID, with exact full-route
+    // overrides and substring patterns. An UNKNOWN model resolves to null and
+    // is NOT blocked (a permissive miss beats a false alarm on a 1M model).
+    var DEFAULTS = {
+      ratio: 0.7,
+      // exact "provider/model" overrides win over everything
+      routes: {},
+      // model id -> window (provider-agnostic)
+      models: {
+        'ark-code-latest': 262144,
+        'deepseek-flash': 1000000,
+        'deepseek-v4.1-flash': 1048576,
+        'deepseek-v4.1-flash-free': 1048576,
+        'mimo-v2.6-flash-free': 1048576,
+        'deepseek-v4-pro': 1000000
+      },
+      // substring match on full route -> window (checked in order; first hit)
+      patterns: [
+        { match: 'ark-code', window: 262144 },
+        { match: 'deepseek-flash', window: 1000000 },
+        { match: 'deepseek-v4', window: 1048576 },
+        { match: 'mimo', window: 1048576 }
+      ]
+    }
+
+    function routeKey(sel) {
+      if (!sel) return ''
+      return (sel.provider || '') + '/' + (sel.model || '')
+    }
+
+    // Resolve the target context window for a selection. Returns a number or
+    // null (unknown -> caller must not block).
+    function resolveWindow(sel, cfg) {
+      var full = routeKey(sel)
+      var id = sel.model || ''
+      if (Object.prototype.hasOwnProperty.call(cfg.routes, full)) return cfg.routes[full]
+      if (id && Object.prototype.hasOwnProperty.call(cfg.models, id)) return cfg.models[id]
+      for (var i = 0; i < cfg.patterns.length; i++) {
+        var p = cfg.patterns[i]
+        if (p.match && (full.indexOf(p.match) !== -1 || id.indexOf(p.match) !== -1)) return p.window
+      }
+      return null
+    }
+
+    function fmtK(n) {
+      if (n >= 10000) return (n / 10000).toFixed(n >= 100000 ? 0 : 1) + ' 万'
+      return String(n)
+    }
+
+    // ---- plain-DOM modal (opaque, theme-aware, accessible) -------------
+    var STYLE_ID = 'context-guard-style'
+    var modalEl = null
+
+    function injectStyle() {
+      if (document.getElementById(STYLE_ID)) return
+      var css = '' +
+        '.cg-root{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;' +
+        'padding:20px;box-sizing:border-box;background:rgba(15,18,26,.5);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);' +
+        'font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;' +
+        'animation:cg-fade .14s ease-out}' +
+        '.cg-card{width:min(480px,calc(100vw - 40px));border-radius:16px;padding:22px 22px 18px;box-sizing:border-box;' +
+        'box-shadow:0 24px 64px rgba(0,0,0,.42),0 2px 8px rgba(0,0,0,.2);animation:cg-pop .16s cubic-bezier(.2,.9,.3,1.2)}' +
+        '.cg-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}' +
+        '.cg-icon{flex:none;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center}' +
+        '.cg-title{font-size:16px;font-weight:650;letter-spacing:.2px}' +
+        '.cg-close{margin-left:auto;flex:none;width:30px;height:30px;border-radius:8px;border:none;background:transparent;cursor:pointer;' +
+        'font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center}' +
+        '.cg-body{font-size:13.5px;margin:0 0 20px;white-space:pre-line}' +
+        '.cg-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap}' +
+        '.cg-spacer{flex:1 1 auto}' +
+        '.cg-btn{appearance:none;-webkit-appearance:none;height:38px;padding:0 16px;border-radius:10px;font-size:14px;font-weight:550;' +
+        'cursor:pointer;border:1px solid transparent;transition:background .12s,border-color .12s,box-shadow .12s;white-space:nowrap}' +
+        '.cg-btn:focus-visible{outline:2px solid #3b82f6;outline-offset:2px}' +
+        '.cg-ghost{background:transparent}' +
+        '.cg-outline{background:transparent}' +
+        // light theme
+        '.cg-root[data-theme=light] .cg-card{background:#ffffff;border:1px solid rgba(15,23,42,.12);color:#0f172a}' +
+        '.cg-root[data-theme=light] .cg-title{color:#0f172a}' +
+        '.cg-root[data-theme=light] .cg-icon{background:#fef3c7;color:#b45309}' +
+        '.cg-root[data-theme=light] .cg-close{color:#64748b}.cg-root[data-theme=light] .cg-close:hover{background:rgba(15,23,42,.07);color:#0f172a}' +
+        '.cg-root[data-theme=light] .cg-body{color:#475569}' +
+        '.cg-root[data-theme=light] .cg-ghost{color:#64748b}.cg-root[data-theme=light] .cg-ghost:hover{background:rgba(15,23,42,.06);color:#0f172a}' +
+        '.cg-root[data-theme=light] .cg-outline{border-color:rgba(15,23,42,.18);color:#0f172a}.cg-root[data-theme=light] .cg-outline:hover{background:rgba(15,23,42,.05)}' +
+        '.cg-root[data-theme=light] .cg-primary{background:#2563eb;color:#fff}.cg-root[data-theme=light] .cg-primary:hover{background:#1d4ed8}' +
+        // dark theme
+        '.cg-root[data-theme=dark]{background:rgba(0,0,0,.62)}' +
+        '.cg-root[data-theme=dark] .cg-card{background:#1d2027;border:1px solid rgba(255,255,255,.1);color:#f1f5f9}' +
+        '.cg-root[data-theme=dark] .cg-title{color:#f8fafc}' +
+        '.cg-root[data-theme=dark] .cg-icon{background:rgba(251,191,36,.16);color:#fbbf24}' +
+        '.cg-root[data-theme=dark] .cg-close{color:#94a3b8}.cg-root[data-theme=dark] .cg-close:hover{background:rgba(255,255,255,.1);color:#f8fafc}' +
+        '.cg-root[data-theme=dark] .cg-body{color:#aeb6c2}' +
+        '.cg-root[data-theme=dark] .cg-ghost{color:#94a3b8}.cg-root[data-theme=dark] .cg-ghost:hover{background:rgba(255,255,255,.08);color:#f1f5f9}' +
+        '.cg-root[data-theme=dark] .cg-outline{border-color:rgba(255,255,255,.18);color:#e5e7eb}.cg-root[data-theme=dark] .cg-outline:hover{background:rgba(255,255,255,.07)}' +
+        '.cg-root[data-theme=dark] .cg-primary{background:#3b82f6;color:#fff}.cg-root[data-theme=dark] .cg-primary:hover{background:#2f6fe0}' +
+        '@keyframes cg-fade{from{opacity:0}to{opacity:1}}' +
+        '@keyframes cg-pop{from{opacity:0;transform:translateY(6px) scale(.98)}to{opacity:1;transform:none}}'
+      var style = document.createElement('style')
+      style.id = STYLE_ID
+      style.textContent = css
+      document.head.appendChild(style)
+    }
+
+    // Detect light/dark: explicit DSH/html attributes win, else probe the
+    // primary-label color's luminance (light text => dark UI).
+    function detectTheme() {
+      try {
+        var de = document.documentElement
+        var attrs = [de.getAttribute('data-theme'), de.getAttribute('data-color-mode'), de.getAttribute('data-color-scheme'), de.className || ''].join(' ')
+        if (/dark/i.test(attrs)) return 'dark'
+        if (/\blight\b/i.test(attrs)) return 'light'
+        var cs = getComputedStyle(de)
+        if (cs && cs.colorScheme && /dark/i.test(cs.colorScheme)) return 'dark'
+        var probe = document.createElement('div')
+        probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;color:var(--dsw-alias-label-primary,#111)'
+        document.body.appendChild(probe)
+        var m = (getComputedStyle(probe).color || '').match(/rgba?\(([^)]+)\)/)
+        probe.remove()
+        if (m) {
+          var p = m[1].split(',').map(function (x) { return parseFloat(x) })
+          var lum = (0.2126 * (p[0] || 0) + 0.7152 * (p[1] || 0) + 0.0722 * (p[2] || 0)) / 255
+          return lum > 0.55 ? 'dark' : 'light'
+        }
+      } catch (_) {}
+      return 'light'
+    }
+
+    function closeModal() {
+      if (onKey) { try { document.removeEventListener('keydown', onKey, true) } catch (_) {} onKey = null }
+      if (modalEl && modalEl.parentNode) modalEl.parentNode.removeChild(modalEl)
+      modalEl = null
+    }
+    var onKey = null
+
+    var WARN_SVG = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<path d="M12 3l10 18H2L12 3z" fill="currentColor" fill-opacity=".18"/>' +
+      '<path d="M12 8v6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>' +
+      '<circle cx="12" cy="17.2" r="1.3" fill="currentColor"/></svg>'
+
+    // Resolves true (compact) / false (proceed anyway) / null (stay / cancel).
+    function ask(detail) {
+      return new Promise(function (resolve) {
+        closeModal()
+        injectStyle()
+
+        var root = document.createElement('div')
+        root.className = 'cg-root'
+        root.setAttribute('data-theme', detectTheme())
+        root.setAttribute('role', 'dialog')
+        root.setAttribute('aria-modal', 'true')
+        root.setAttribute('aria-label', '上下文可能超过目标模型')
+
+        var card = document.createElement('div')
+        card.className = 'cg-card'
+
+        var head = document.createElement('div')
+        head.className = 'cg-head'
+        var icon = document.createElement('div')
+        icon.className = 'cg-icon'
+        icon.innerHTML = WARN_SVG
+        var title = document.createElement('div')
+        title.className = 'cg-title'
+        title.textContent = '上下文可能超过目标模型'
+        var close = document.createElement('button')
+        close.className = 'cg-close'
+        close.setAttribute('aria-label', '取消')
+        close.textContent = '×'
+        head.appendChild(icon); head.appendChild(title); head.appendChild(close)
+
+        var body = document.createElement('p')
+        body.className = 'cg-body'
+        body.textContent = detail
+
+        var foot = document.createElement('div')
+        foot.className = 'cg-foot'
+        function btn(label, cls) {
+          var b = document.createElement('button')
+          b.type = 'button'
+          b.className = 'cg-btn ' + cls
+          b.textContent = label
+          return b
+        }
+        var stay = btn('保持原模型', 'cg-ghost')
+        var spacer = document.createElement('span')
+        spacer.className = 'cg-spacer'
+        var skip = btn('仍然切换', 'cg-outline')
+        var go = btn('先压缩再切换', 'cg-primary')
+        foot.appendChild(stay); foot.appendChild(spacer); foot.appendChild(skip); foot.appendChild(go)
+
+        card.appendChild(head); card.appendChild(body); card.appendChild(foot)
+        root.appendChild(card)
+
+        var done = false
+        function finish(v) { if (!done) { done = true; closeModal(); resolve(v) } }
+        go.addEventListener('click', function () { finish(true) })
+        skip.addEventListener('click', function () { finish(false) })
+        stay.addEventListener('click', function () { finish(null) })
+        close.addEventListener('click', function () { finish(null) })
+        root.addEventListener('mousedown', function (e) { if (e.target === root) finish(null) })
+        onKey = function (e) {
+          if (e.composedPath && !e.composedPath().includes(root)) return
+          if (e.key === 'Escape') { e.preventDefault(); finish(null) }
+          else if (e.key === 'Enter') { e.preventDefault(); finish(true) }
+        }
+        document.addEventListener('keydown', onKey, true)
+
+        modalEl = root
+        document.body.appendChild(root)
+        setTimeout(function () { try { go.focus() } catch (_) {} }, 0)
+      })
+    }
+
+    function usageOf(sessions, sessionId) {
+      try {
+        var b = sessions.binding(sessionId)
+        var pf = b && b.session && b.session.projections && b.session.projections.faceOf('contextPressure')
+        var s = pf ? pf.getSnapshot() : null
+        var u = s && (s.projectedTokens != null ? s.projectedTokens : s.pressureTokens)
+        return typeof u === 'number' && isFinite(u) ? u : null
+      } catch (_) { return null }
+    }
+
+    // Run `/compact` for THIS session, then wait for the projected context to
+    // actually fall below targetThreshold (best-effort; compaction is a host
+    // flow). Resolves with the post-compaction usage, or the last sample on
+    // timeout — the caller switches regardless, but waiting avoids sending an
+    // oversized first prompt to the small model.
+    function runCompactAndWait(sessions, sessionId, targetThreshold) {
+      return new Promise(function (resolve) {
+        var b
+        try { b = sessions.binding(sessionId) } catch (_) { b = undefined }
+        if (!b || !b.session || typeof b.session.command !== 'function') { resolve(usageOf(sessions, sessionId)); return }
+
+        var startUsage = usageOf(sessions, sessionId)
+        var settled = false
+        var deadline = Date.now() + 90000
+        function done(u) { if (!settled) { settled = true; resolve(u) } }
+
+        Promise.resolve(b.session.command('/compact')).then(function (r) {
+          if (r && r.ok === false) console.warn('[context-guard] /compact rejected:', r.error)
+        }).catch(function (e) { console.warn('[context-guard] /compact failed:', e) })
+
+        var timer = setInterval(function () {
+          var u = usageOf(sessions, sessionId)
+          if (u != null && (u < targetThreshold || (startUsage != null && u < startUsage * 0.985))) {
+            clearInterval(timer); done(u); return
+          }
+          if (Date.now() > deadline) { clearInterval(timer); done(u) }
+        }, 1000)
+      })
+    }
+
+// Insert inside the existing client factory. No imports, exports, RPCs, or
+// session subscriptions. The containing factory supplies resolveWindow/DEFAULTS.
+function createAutoSettings(options) {
+  var disposed = false
+  var opened = false
+  var sessionId = null
+  var draft = { enabled: false, candidates: [] }
+  var catalog = []
+  var catalogLoaded = false
+  var fetchEpoch = 0
+  var saveEpoch = 0
+  var saveQueues = new Map()
+  var pendingSaves = new Map()
+  var errorText = ''
+  var loading = false
+  var previousFocus = null
+  var host = document.createElement('div')
+  host.style.cssText = 'position:fixed;inset:0;z-index:2147483000;pointer-events:none;font-family:system-ui,sans-serif;color:#172033;font-size:14px;'
+  // A shadow root keeps host themes from making the card transparent or changing
+  // controls. All user/catalog strings enter through textContent or input.value.
+  var root = typeof host.attachShadow === 'function' ? host.attachShadow({ mode: 'open' }) : host
+
+  function el(tag, text, css) {
+    var node = document.createElement(tag)
+    if (text !== undefined) node.textContent = text
+    if (css) node.style.cssText = css
+    return node
+  }
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild) }
+  function button(text, action) {
+    var node = el('button', text, 'background:#fff;color:#172033;border:1px solid #cbd5e1;border-radius:7px;padding:7px 10px;cursor:pointer;font:inherit;')
+    node.type = 'button'
+    node.addEventListener('click', action)
+    return node
+  }
+  function message(error) { return error && error.message ? String(error.message) : String(error || '未知错误') }
+  function clone(cfg) {
+    return {
+      enabled: !!(cfg && cfg.enabled),
+      candidates: cfg && Array.isArray(cfg.candidates) ? cfg.candidates.map(function (c) {
+        var out = { provider: String(c.provider || ''), model: String(c.model || '') }
+        if (Number.isSafeInteger(c.window) && c.window > 0) out.window = c.window
+        return out
+      }).filter(function (c) { return c.provider && c.model }) : []
+    }
+  }
+  function knownWindow(sel) {
+    try {
+      var n = resolveWindow(sel, DEFAULTS)
+      return Number.isSafeInteger(n) && n > 0 ? n : null
+    } catch (_) { return null }
+  }
+  function key(c) { return JSON.stringify([c.provider, c.model]) }
+
+  var launcher = button('自动切换', function () { if (opened) close(); else open() })
+  launcher.style.cssText = 'height:30px;padding:0 9px;border:1px solid var(--dsw-alias-border-l2,#cbd5e1);border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#475569);font:12px/1.2 system-ui,sans-serif;white-space:nowrap;cursor:pointer;pointer-events:auto;'
+  var launcherHost = document.createElement('span')
+  launcherHost.style.cssText = 'display:inline-flex;align-items:center;flex:none;pointer-events:auto;'
+  var launcherRoot = typeof launcherHost.attachShadow === 'function' ? launcherHost.attachShadow({ mode: 'open' }) : launcherHost
+  launcherRoot.appendChild(launcher)
+  // Use the native composer's file input as an anchor, next to its + control.
+  // Keep the dialog in the body so composer overflow cannot clip it.
+  function mountLauncher() {
+    if (disposed) return
+    var sessionRoot = document.querySelector && document.querySelector('[data-conversation-session]')
+    var fileInput = sessionRoot && typeof sessionRoot.querySelector === 'function' && sessionRoot.querySelector('input[type="file"]')
+    var tools = fileInput && fileInput.parentElement
+    if (tools && launcherHost.parentNode !== tools) tools.appendChild(launcherHost)
+    else if (!tools && launcherHost.parentNode) launcherHost.remove()
+  }
+  mountLauncher()
+  var overlay = el('div', undefined, 'position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(15,23,42,.65);pointer-events:auto;padding:20px;box-sizing:border-box;')
+  var panel = el('section', undefined, 'background:#fff;color:#172033;border:1px solid #cbd5e1;border-radius:14px;box-shadow:0 20px 70px #0006;width:620px;max-width:100%;max-height:88vh;overflow:auto;padding:20px;box-sizing:border-box;')
+  panel.setAttribute('role', 'dialog')
+  panel.setAttribute('aria-modal', 'true')
+  panel.setAttribute('aria-label', '自动切换设置')
+  panel.tabIndex = -1
+  var header = el('div', undefined, 'display:flex;align-items:center;justify-content:space-between;gap:12px;')
+  header.appendChild(el('h2', '自动切换设置', 'font-size:18px;margin:0;'))
+  header.appendChild(button('关闭', close))
+  panel.appendChild(header)
+  panel.appendChild(el('p', '仅保存当前会话设置。编辑候选模型不会立即切换模型。候选顺序表示优先级。', 'color:#475569;line-height:1.6;'))
+  var sessionLabel = el('div', '', 'font-size:12px;color:#64748b;overflow-wrap:anywhere;margin-bottom:10px;')
+  panel.appendChild(sessionLabel)
+  var enableLabel = el('label', undefined, 'display:flex;gap:8px;align-items:center;margin:12px 0;')
+  var enabled = el('input')
+  enabled.type = 'checkbox'
+  enableLabel.appendChild(enabled)
+  enableLabel.appendChild(el('span', '启用本会话自动切换'))
+  panel.appendChild(enableLabel)
+  var status = el('div', '', 'white-space:pre-wrap;overflow-wrap:anywhere;color:#475569;font-size:12px;margin:10px 0;')
+  var errors = el('div', '', 'white-space:pre-wrap;overflow-wrap:anywhere;color:#b91c1c;font-size:13px;margin:10px 0;')
+  errors.setAttribute('role', 'alert')
+  panel.appendChild(status)
+  panel.appendChild(errors)
+  panel.appendChild(el('h3', '候选模型', 'font-size:14px;margin:16px 0 8px;'))
+  var candidates = el('div', undefined, 'display:grid;gap:8px;')
+  panel.appendChild(candidates)
+  var catalogHeader = el('div', undefined, 'display:flex;align-items:center;justify-content:space-between;margin-top:18px;gap:8px;')
+  catalogHeader.appendChild(el('h3', '添加模型', 'font-size:14px;margin:0;'))
+  catalogHeader.appendChild(button('重新加载目录', function () { loadCatalog(true) }))
+  panel.appendChild(catalogHeader)
+  var search = el('input', undefined, 'width:100%;box-sizing:border-box;margin:10px 0;padding:9px;border:1px solid #94a3b8;border-radius:7px;background:#fff;color:#172033;font:inherit;')
+  search.type = 'search'
+  search.placeholder = '搜索提供商或模型'
+  search.setAttribute('aria-label', '搜索模型目录')
+  panel.appendChild(search)
+  var results = el('div', undefined, 'display:grid;gap:6px;max-height:240px;overflow:auto;')
+  panel.appendChild(results)
+  overlay.appendChild(panel)
+  root.appendChild(overlay)
+  document.body.appendChild(host)
+
+  function updateLauncher() {
+    var active = false
+    try { active = !!(sessionId && options.getConfig(sessionId).enabled) } catch (_) {}
+    launcher.style.background = active ? '#15803d' : 'var(--dsw-alias-bg-base,#fff)'
+    launcher.style.color = active ? '#ffffff' : 'var(--dsw-alias-label-secondary,#475569)'
+    launcher.style.borderColor = active ? '#15803d' : 'var(--dsw-alias-border-l2,#cbd5e1)'
+    launcher.setAttribute('aria-pressed', active ? 'true' : 'false')
+    launcher.title = active ? '自动切换已启用（当前会话）' : '自动切换未启用（当前会话）'
+  }
+  function showStatus() {
+    if (disposed) return
+    updateLauncher()
+    errors.textContent = errorText
+    try {
+      var value = sessionId ? options.getStatus(sessionId) : null
+      status.textContent = value == null ? '' : typeof value === 'string' ? value : JSON.stringify(value)
+    } catch (error) { status.textContent = '状态读取失败：' + message(error) }
+    if (sessionId && pendingSaves.get(sessionId)) status.textContent += '\n正在保存设置…'
+  }
+  function persist() {
+    if (disposed || !sessionId) return
+    var id = sessionId
+    var cfg = clone(draft)
+    var token = ++saveEpoch
+    errorText = ''
+    pendingSaves.set(id, (pendingSaves.get(id) || 0) + 1)
+    // Serialize edits per Session so a slower old save cannot overwrite a newer
+    // edit. Capturing id prevents a navigation from saving into the new Session.
+    var previous = saveQueues.get(id) || Promise.resolve()
+    var operation = previous.catch(function () {}).then(function () {
+      return options.saveConfig(id, cfg)
+    }).then(function (result) {
+      if (result && result.ok === false) throw new Error(message(result.error))
+    }).catch(function (error) {
+      if (!disposed && sessionId === id && token === saveEpoch) errorText = '保存失败：' + message(error)
+    }).then(function () {
+      pendingSaves.set(id, Math.max(0, (pendingSaves.get(id) || 1) - 1))
+      if (saveQueues.get(id) === operation) saveQueues.delete(id)
+      if (!disposed && sessionId === id) showStatus()
+    })
+    saveQueues.set(id, operation)
+    showStatus()
+  }
+  function renderCandidates() {
+    clear(candidates)
+    if (!draft.candidates.length) candidates.appendChild(el('div', '尚未添加候选模型。', 'color:#64748b;'))
+    draft.candidates.forEach(function (candidate, index) {
+      var row = el('div', undefined, 'padding:10px;border:1px solid #dbe2ea;border-radius:8px;background:#f8fafc;')
+      row.appendChild(el('div', (index + 1) + '. ' + candidate.provider + ' / ' + candidate.model, 'font-weight:600;overflow-wrap:anywhere;margin-bottom:8px;'))
+      var controls = el('div', undefined, 'display:flex;flex-wrap:wrap;align-items:center;gap:6px;')
+      var up = button('上移', function () {
+        if (!index) return
+        var list = draft.candidates
+        list[index] = list[index - 1]; list[index - 1] = candidate
+        persist(); renderCandidates()
+      })
+      up.disabled = index === 0
+      var down = button('下移', function () {
+        if (index >= draft.candidates.length - 1) return
+        var list = draft.candidates
+        list[index] = list[index + 1]; list[index + 1] = candidate
+        persist(); renderCandidates()
+      })
+      down.disabled = index === draft.candidates.length - 1
+      controls.appendChild(up); controls.appendChild(down)
+      controls.appendChild(button('移除', function () { draft.candidates.splice(index, 1); persist(); renderCandidates(); renderCatalog() }))
+      var label = el('label', '窗口 tokens：', 'display:flex;gap:5px;align-items:center;flex-wrap:wrap;')
+      var input = el('input', undefined, 'width:135px;background:#fff;color:#172033;border:1px solid #94a3b8;border-radius:5px;padding:6px;')
+      input.type = 'text'
+      input.inputMode = 'numeric'
+      input.value = candidate.window ? String(candidate.window) : ''
+      var known = knownWindow(candidate)
+      input.placeholder = known ? String(known) + '（默认）' : '未知；可填写'
+      input.setAttribute('aria-label', candidate.provider + '/' + candidate.model + ' 的窗口覆盖值（tokens）')
+      input.addEventListener('change', function () {
+        var text = input.value.trim()
+        var n = Number(text)
+        if (text && (!/^\d+$/.test(text) || !Number.isSafeInteger(n) || n <= 0)) {
+          input.setAttribute('aria-invalid', 'true')
+          errorText = '窗口覆盖值必须为正整数 tokens；留空使用已知窗口。'
+          showStatus(); return
+        }
+        input.removeAttribute('aria-invalid')
+        if (text) candidate.window = n; else delete candidate.window
+        persist()
+      })
+      label.appendChild(input); controls.appendChild(label); row.appendChild(controls); candidates.appendChild(row)
+    })
+  }
+  function flatten(groups) {
+    var out = [], seen = new Set()
+    groups.forEach(function (group) {
+      var p = group.provider
+      var provider = typeof p === 'string' ? p : p && (p.id || p.name)
+      provider = provider || group.id
+      var models = group.models || group.items || []
+      if (!provider || !Array.isArray(models)) return
+      models.forEach(function (model) {
+        var id = typeof model === 'string' ? model : model.id || model.model
+        if (!id) return
+        var item = { provider: String(provider), model: String(id), name: typeof model === 'string' ? model : String(model.name || id) }
+        if (!seen.has(key(item))) { seen.add(key(item)); out.push(item) }
+      })
+    })
+    return out
+  }
+  function renderCatalog() {
+    clear(results)
+    if (loading) { results.appendChild(el('div', '正在加载模型目录…')); return }
+    var query = search.value.trim().toLowerCase()
+    var matches = catalog.filter(function (c) { return (c.provider + ' ' + c.model + ' ' + c.name).toLowerCase().indexOf(query) !== -1 })
+    if (!matches.length) results.appendChild(el('div', catalogLoaded ? '没有匹配的模型。' : '模型目录尚未加载。', 'color:#64748b;'))
+    matches.slice(0, 100).forEach(function (item) {
+      var row = el('div', undefined, 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px;border-bottom:1px solid #e2e8f0;')
+      row.appendChild(el('span', item.provider + ' / ' + item.name + (item.name !== item.model ? ' (' + item.model + ')' : ''), 'overflow-wrap:anywhere;min-width:0;'))
+      var exists = draft.candidates.some(function (c) { return key(c) === key(item) })
+      var add = button(exists ? '已添加' : '添加', function () {
+        if (!sessionId || draft.candidates.some(function (c) { return key(c) === key(item) })) return
+        draft.candidates.push({ provider: item.provider, model: item.model })
+        persist(); renderCandidates(); renderCatalog()
+      })
+      add.disabled = exists || !sessionId
+      row.appendChild(add); results.appendChild(row)
+    })
+    if (matches.length > 100) results.appendChild(el('div', '仅显示前 100 项，请搜索缩小范围。', 'color:#64748b;'))
+  }
+  function loadCatalog(force) {
+    if (disposed || !opened || (catalogLoaded && !force)) return
+    var token = ++fetchEpoch
+    loading = true
+    renderCatalog()
+    Promise.resolve().then(function () { return options.getCatalog() }).then(function (groups) {
+      // getCatalog's API has no AbortSignal. Cancel logically: close/dispose or
+      // a newer request invalidates this response, including its errors.
+      if (disposed || !opened || token !== fetchEpoch) return
+      if (!Array.isArray(groups)) throw new Error('目录响应不是 groups 数组')
+      catalog = flatten(groups)
+      catalogLoaded = true
+      errorText = ''
+    }).catch(function (error) {
+      if (!disposed && opened && token === fetchEpoch) errorText = '模型目录加载失败：' + message(error)
+    }).then(function () {
+      if (disposed || !opened || token !== fetchEpoch) return
+      loading = false; renderCatalog(); showStatus()
+    })
+  }
+  function refresh() {
+    if (disposed) return
+    try {
+      var next = options.getSessionId() || null
+      var changed = next !== sessionId
+      sessionId = next
+      if (changed) { ++saveEpoch; errorText = '' }
+      // Keep in-flight edits instead of reading a stale persisted configuration.
+      if (!sessionId) draft = clone(null)
+      else if (changed || !pendingSaves.get(sessionId)) draft = clone(options.getConfig(sessionId))
+      launcher.disabled = !sessionId
+      enabled.disabled = !sessionId
+      enabled.checked = draft.enabled
+      updateLauncher()
+      sessionLabel.textContent = sessionId ? '当前会话：' + sessionId : '未打开会话'
+      if (opened && changed) { renderCandidates(); renderCatalog() }
+      if (opened) showStatus()
+    } catch (error) {
+      errorText = '设置读取失败：' + message(error)
+      enabled.disabled = true
+      showStatus()
+    }
+  }
+  function open() {
+    if (disposed) return
+    previousFocus = document.activeElement
+    opened = true; overlay.style.display = 'flex'
+    refresh(); renderCandidates(); renderCatalog(); showStatus(); panel.focus(); loadCatalog(false)
+  }
+  function close() {
+    opened = false; ++fetchEpoch; loading = false
+    overlay.style.display = 'none'
+    try { if (previousFocus && typeof previousFocus.focus === 'function') previousFocus.focus() } catch (_) {}
+  }
+  enabled.addEventListener('change', function () { if (sessionId) { draft.enabled = enabled.checked; persist() } })
+  search.addEventListener('input', renderCatalog)
+  overlay.addEventListener('click', function (event) { if (event.target === overlay) close() })
+  function keydown(event) {
+    if (!opened) return
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return }
+    if (event.key !== 'Tab') return
+    var controls = Array.from(panel.querySelectorAll('button:not(:disabled), input:not(:disabled)'))
+    if (!controls.length) { event.preventDefault(); panel.focus(); return }
+    var active = root.activeElement || document.activeElement
+    var index = controls.indexOf(active)
+    if (event.shiftKey && index <= 0) { event.preventDefault(); controls[controls.length - 1].focus() }
+    else if (!event.shiftKey && (index < 0 || index === controls.length - 1)) { event.preventDefault(); controls[0].focus() }
+  }
+  root.addEventListener('keydown', keydown)
+  refresh()
+  return {
+    refresh: refresh,
+    mount: mountLauncher,
+    updateStatus: showStatus,
+    dispose: function () {
+      if (disposed) return
+      close(); disposed = true; ++fetchEpoch
+      root.removeEventListener('keydown', keydown)
+      host.remove()
+      launcherHost.remove()
+      // Saves already submitted remain scoped to their captured Session IDs.
+    }
+  }
+}
+
+// Insert inside the client factory. No module dependencies and no DOM access.
+// Optional o.storage, o.waitMs, o.pollMs support isolated tests.
+function createAutoEngine(o) {
+  var states = new Map(), disposed = false
+  var prefix = 'dsh.contextGuard.auto.v1:'
+  var continuation = '请继续上一条因模型额度或限流失败而中断的任务；从已有进度继续，不要重复已完成的操作。'
+  var storage
+  try { storage = o.storage || (typeof localStorage !== 'undefined' ? localStorage : null) } catch (_) {}
+  function key(s) { return s && s.provider && s.model ? s.provider + '/' + s.model : '' }
+  function number(n) { return typeof n === 'number' && isFinite(n) && n >= 0 }
+  function normalize(c) {
+    var seen = new Set()
+    return { enabled: !!(c && c.enabled), candidates: (c && Array.isArray(c.candidates) ? c.candidates : []).filter(function (x) {
+      var k = key(x)
+      if (!k || seen.has(k)) return false
+      seen.add(k); return true
+    }).slice(0, 32).map(function (x) {
+      var t = { provider: x.provider, model: x.model }
+      if (number(x.window) && x.window > 0) t.window = x.window
+      return t
+    }) }
+  }
+  function load(id) {
+    try { return normalize(JSON.parse(storage && storage.getItem(prefix + id) || 'null')) } catch (_) { return normalize(null) }
+  }
+  function state(id) {
+    if (!states.has(id)) states.set(id, { cfg: load(id), failed: new Set(), generation: 0, flight: false, status: { phase: 'idle', message: '等待额度或限流错误' } })
+    return states.get(id)
+  }
+  function status(s, phase, message, error) {
+    s.status = { phase: phase, message: message }
+    if (error) s.status.error = String(error.message || error)
+    if (o.onStatus) { try { o.onStatus() } catch (_) {} }
+  }
+  function quota(error) {
+    if (error && ['QUOTA', 'ACCOUNT_QUOTA', 'RATE_LIMIT'].includes(error.code)) return true
+    if (error && error.status === 429) return true
+    var text = String(error && error.code || '') + ' ' + String(error && error.message || '')
+    if (/unauthori[sz]ed|authentication|invalid.?api.?key|\b40[13]\b|network|fetch failed|ECONN|ENOTFOUND|timeout|abort|cancel|认证|鉴权|网络|取消/i.test(text)) return false
+    return /ACCOUNT[_ -]?QUOTA|RATE[_ -]?LIMIT|\b429\b|insufficient[ _-]*(balance|quota|credit)|quota[ _-]*(exceeded|exhausted)|\bquota\b|余额不足|额度不足|配额|限流/i.test(text)
+  }
+  function cancel(s, message) { s.generation++; status(s, 'cancelled', message || '已取消自动切换') }
+  function snapshot(s) {
+    try { return s.binding.session.getSnapshot() } catch (_) { return null }
+  }
+  function selection(id) { try { return o.currentSelection(id) } catch (_) { return null } }
+  function windowOf(t) {
+    if (number(t.window) && t.window > 0) return t.window
+    try { var n = o.resolveWindow(t); return number(n) && n > 0 ? n : null } catch (_) { return null }
+  }
+  function safeUsage(id) { try { var n = o.usage(id); return number(n) ? n : null } catch (_) { return null } }
+  function errorText(r) { return r && r.error && (r.error.message || r.error.code) || '操作未被接受' }
+  async function run(id, s) {
+    if (s.flight || !s.binding || !s.cfg.enabled || disposed) return
+    s.flight = true
+    var token = s.generation, expected = key(selection(id)), began = false
+    function valid() {
+      if (disposed || token !== s.generation || !s.binding || !s.cfg.enabled) return false
+      if (!o.isCurrent(id) || key(selection(id)) !== expected) { cancel(s, '会话或模型已由用户切换，停止自动续接'); return false }
+      return true
+    }
+    try {
+      if (!expected || !valid()) return
+      s.failed.add(expected)
+      status(s, 'waiting', '额度或限流失败，等待当前轮次结束')
+      var deadline = Date.now() + (o.waitMs == null ? 4000 : o.waitMs)
+      while (valid()) {
+        var snap = snapshot(s)
+        if (snap && snap.running === false) break
+        if (Date.now() >= deadline) { status(s, 'stopped', '会话仍在运行，未自动修改模型'); return }
+        await new Promise(function (r) { setTimeout(r, o.pollMs == null ? 100 : o.pollMs) })
+      }
+      if (!valid()) return
+      var pressure = safeUsage(id)
+      if (pressure === null) { status(s, 'stopped', '上下文用量未知，无法安全自动切换'); return }
+      var candidates = s.cfg.candidates.slice(), at = candidates.findIndex(function (x) { return key(x) === expected })
+      var ordered = at < 0 ? candidates : candidates.slice(at + 1).concat(candidates.slice(0, at + 1))
+      o.begin(id); began = true
+      for (var i = 0; i < ordered.length; i++) {
+        if (!valid()) return
+        var target = ordered[i], route = key(target), win = windowOf(target)
+        if (s.failed.has(route) || !win) continue
+        var threshold = .7 * win
+        // Unknown pressure must never become permission to switch.
+        pressure = safeUsage(id)
+        if (pressure === null) { status(s, 'stopped', '上下文用量未知，停止自动切换'); return }
+        if (pressure >= threshold) {
+          status(s, 'compacting', '候选模型窗口不足，正在先压缩上下文：' + route)
+          try { pressure = await o.compact(id, threshold) } catch (e) { pressure = null }
+          if (!valid()) return
+          if (!number(pressure) || pressure >= threshold) continue
+        }
+        if (!valid()) return
+        status(s, 'switching', '正在切换到备用模型：' + route)
+        // Expected route changes before selectModel; live selection updates may
+        // be synchronous. No retries or fallback after an uncertain mutation.
+        var old = expected
+        var result = await o.selectModel(id, target)
+        if (token !== s.generation || disposed || !s.binding || !s.cfg.enabled) return
+        var now = key(selection(id))
+        if (now !== old && now !== route) { cancel(s, '用户已选择其他模型，停止自动续接'); return }
+        expected = route
+        if (!result || result.ok !== true) { status(s, 'error', '备用模型切换失败：' + errorText(result)); return }
+        if (!o.isCurrent(id)) { cancel(s, '已离开当前会话，停止自动续接'); return }
+        var confirmed = await o.assertSelection(id, target, 'auto-quota-failover')
+        if (!valid()) return
+        if (confirmed !== true) { status(s, 'error', '未能确认备用模型，未发送续接指令'); return }
+        o.commit(id, target)
+        if (!valid()) return
+        status(s, 'continuing', '模型已切换，正在发送一次续接指令')
+        var before = snapshot(s), response = await s.binding.session.prompt([{ type: 'text', text: continuation }], 'queue')
+        if (!valid()) return
+        var after = snapshot(s)
+        if (!response || response.ok !== true || !response.value || response.value.accepted !== true || (after && after.promptError && (!before || after.promptError !== before.promptError))) {
+          status(s, 'error', '续接指令未被接受：' + errorText(response)); return
+        }
+        status(s, 'continued', '已发送续接指令，使用备用模型：' + route)
+        return
+      }
+      status(s, 'stopped', '没有可安全使用的备用模型：候选已失败、窗口未知或压缩未达安全阈值')
+    } catch (e) {
+      if (token === s.generation && !disposed) status(s, 'error', '自动切换失败', e)
+    } finally {
+      if (began) { try { o.end(id) } catch (_) {} }
+      s.flight = false
+    }
+  }
+  function bind(id, binding) {
+    unbind(id)
+    if (disposed) return
+    var s = state(id), source = binding && (binding.eventSource || binding.session && binding.session.eventSource)
+    s.binding = binding; s.high = -1
+    if (!source || typeof source.subscribe !== 'function' || typeof source.getSnapshot !== 'function') { status(s, 'error', '当前会话没有可用事件源'); return }
+    // Baseline includes ALL existing entries, even if last change was append.
+    function baseline(entries) { (entries || []).forEach(function (x) { var seq = x.event && x.event.seq; if (number(seq)) s.high = Math.max(s.high, seq) }) }
+    try { var initial = source.getSnapshot(); baseline(initial && initial.entries); baseline(initial && initial.change && initial.change.entries) } catch (_) {}
+    s.stop = source.subscribe(function () {
+      try {
+        var snap = source.getSnapshot(), change = snap && snap.change
+        if (!change) return
+        if (change.kind !== 'append') { baseline(change.entries); return }
+        ;(change.entries || []).forEach(function (entry) {
+          var e = entry.event
+          if (!e || !number(e.seq) || e.seq <= s.high) return
+          s.high = e.seq
+          if (e.type !== 'turn/end') return
+          var reason = e.data && e.data.reason
+          if (reason && reason.kind === 'completed') { s.failed.clear(); return }
+          if (!reason || reason.kind !== 'error' || !s.cfg.enabled || !quota(reason.error)) return
+          // Keep failed chain across programmatic continuation turns.
+          if (!s.flight) run(id, s)
+        })
+      } catch (e) { status(s, 'error', '读取会话事件失败', e) }
+    })
+    status(s, 'idle', s.cfg.enabled ? '自动备用模型已启用' : '自动备用模型未启用')
+  }
+  function unbind(id) {
+    var s = states.get(id)
+    if (!s) return
+    cancel(s, '已离开会话，自动续接已取消')
+    try { if (s.stop) s.stop() } catch (_) {}
+    s.stop = null; s.binding = null
+  }
+  return {
+    bind: bind, unbind: unbind,
+    getConfig: function (id) { return normalize(state(id).cfg) },
+    saveConfig: function (id, cfg) {
+      var s = state(id), next = normalize(cfg)
+      if (!storage) throw new Error('浏览器本地存储不可用，设置未保存')
+      try { storage.setItem(prefix + id, JSON.stringify(next)) } catch (e) { status(s, 'error', '保存自动切换配置失败', e); throw e }
+      cancel(s, '配置已更改，旧自动切换已取消'); s.cfg = next
+      s.failed.clear()
+      status(s, 'idle', next.enabled ? '自动备用模型已启用' : '自动备用模型未启用')
+      return normalize(s.cfg)
+    },
+    getStatus: function (id) { return Object.assign({}, state(id).status) },
+    dispose: function () { disposed = true; states.forEach(function (_, id) { unbind(id) }) }
+  }
+}
+
+    function start(ctx) {
+      var sessions = ctx.sessions
+      if (!sessions || typeof sessions.binding !== 'function') return function () {}
+      // remote.session drives the revert/re-apply RPCs. apply() formally
+      // injects both 'sessions' and 'remote', so this scope allows reading it
+      // (Cordis throws on uninjected property access). It may still be absent
+      // on an unusual host, in which case the guard still warns but cannot
+      // auto-revert.
+      var remote = ctx.remote || null
+
+      // Tunables are constants (DEFAULTS): reading an uninjected service such
+      // as `ctx.config` would itself throw under the Cordis scope proxy.
+      var config = DEFAULTS
+
+      var stops = new Map()          // sessionId -> unsubscribe
+      var committed = new Map()      // sessionId -> routeKey of last confirmed model
+      var committedSel = new Map()   // sessionId -> full selection object of committed model
+      var pending = new Map()        // sessionId -> { fromSel, toSel, toKey } while modal open
+      var suppress = new Map()       // sessionId -> routeKey user explicitly chose to allow
+      var holding = new Set()        // sessionId -> an assertSelection() loop owns the selection
+      var epoch = new Map()          // monotonic decision counter; never reset on unbind
+      var disposed = false
+      var autoEngine = null
+      var autoSettings = null
+
+      // Programmatically re-select a model. Mirrors dsh-client-ui-model-selection,
+      // which calls remote.session.selectModel with the same payload.
+      function remoteNS() {
+        // `remote` comes from the formally-injected scope. Access nothing else
+        // off ctx (uninjected property reads throw under Cordis).
+        return remote && remote.session && typeof remote.session.selectModel === 'function'
+          ? remote.session
+          : null
+      }
+
+      function selectModel(sessionId, sel) {
+        try {
+          var ns = remoteNS()
+          if (!ns) {
+            console.warn('[context-guard] remote.session.selectModel unavailable')
+            return Promise.resolve({ ok: false, unavailable: true })
+          }
+          var payload = { sessionId: sessionId, provider: sel.provider, model: sel.model }
+          if (sel.reasoningEffort !== undefined && sel.reasoningEffort !== null) {
+            payload.reasoningEffort = sel.reasoningEffort
+          }
+          return Promise.resolve(ns.selectModel(payload)).then(function (r) {
+            // Be tolerant of differing remote envelopes.
+            if (r && r.ok === false) return r
+            return { ok: true, raw: r }
+          }).catch(function (e) {
+            console.warn('[context-guard] selectModel failed:', e)
+            return { ok: false, error: e }
+          })
+        } catch (e) {
+          console.warn('[context-guard] selectModel threw:', e)
+          return Promise.resolve({ ok: false, error: e })
+        }
+      }
+
+      // Read the session's CURRENT selection straight from the projection
+      // (`next` is what the next request will use, falling back to lastUsed).
+      function currentSelection(sessionId) {
+        try {
+          var b = sessions.binding(sessionId)
+          var f = b && b.session && b.session.projections && b.session.projections.faceOf('modelSelection')
+          var s = f ? f.getSnapshot() : null
+          return (s && (s.next || s.lastUsed)) || null
+        } catch (_) { return null }
+      }
+
+      // Make a selection STICK. A single fire-and-forget selectModel can lose a
+      // race against the UI's own selection write (and the host may reject it
+      // while the session is busy), which is exactly how a "stay on the old
+      // model" click could still end up on the new model. So: re-assert, then
+      // verify against the projection, retrying a few times, and report the
+      // real outcome instead of assuming success.
+      //
+      // Each call carries an epoch: a newer decision for the same session
+      // (e.g. the user clicking a button while the auto-revert is still
+      // retrying) bumps the epoch and makes the older loop abandon, so two
+      // assertion loops can never fight over one selection.
+      function assertSelection(sessionId, targetSel, label) {
+        if (!targetSel || !targetSel.provider || !targetSel.model) {
+          holding.delete(sessionId)
+          console.warn('[context-guard] ' + label + ': no known previous selection; nothing to restore')
+          return Promise.resolve(false)
+        }
+        var want = routeKey(targetSel)
+        var myEpoch = epoch.get(sessionId) || 0
+        var attempt = 0
+        // A busy session rejects with session/writer-held; that clears on its
+        // own, so back off and keep trying rather than giving up instantly.
+        var MAX = 6
+        holding.add(sessionId)
+        return new Promise(function (resolve) {
+          function finish(ok) {
+            if ((epoch.get(sessionId) || 0) === myEpoch) holding.delete(sessionId)
+            resolve(ok)
+          }
+          function step() {
+            if (disposed || !stops.has(sessionId) || (epoch.get(sessionId) || 0) !== myEpoch) { resolve(false); return } // superseded/unmounted
+            var cur = currentSelection(sessionId)
+            if (cur && routeKey(cur) === want) {
+              console.info('[context-guard] ' + label + ': confirmed on ' + want +
+                (attempt ? ' after ' + attempt + ' retry(ies)' : ''))
+              finish(true)
+              return
+            }
+            if (attempt >= MAX) {
+              console.error('[context-guard] ' + label + ' FAILED: still on ' +
+                (cur ? routeKey(cur) : '?') + ', wanted ' + want +
+                ' (host rejected the selection or another writer overwrote it)')
+              finish(false)
+              return
+            }
+            attempt++
+            selectModel(sessionId, targetSel).then(function (r) {
+              // A missing service will never come good by retrying: stop now
+              // and say once, instead of spamming six identical failures.
+              if (r && r.unavailable) {
+                console.error('[context-guard] ' + label + ' FAILED: remote.session.selectModel is not available on this host' +
+                  ' (the model cannot be restored programmatically)')
+                finish(false)
+                return
+              }
+              if (r && r.ok === false) {
+                console.warn('[context-guard] ' + label + ': selectModel rejected (' +
+                  ((r.error && (r.error.code || r.error.message)) || 'unknown') + '), retrying')
+              }
+              // Give the host round-trip + projection frame time to land;
+              // back off a little so a busy session has time to free up.
+              setTimeout(step, 250 + attempt * 120)
+            })
+          }
+          step()
+        })
+      }
+
+      function applyTarget(sessionId, p) {
+        // Whitelist the programmatic re-switch so evaluate() won't re-block it.
+        suppress.set(sessionId, p.toKey)
+        return selectModel(sessionId, p.toSel).then(function (r) {
+          if (r && r.ok) { committed.set(sessionId, p.toKey); committedSel.set(sessionId, p.toSel) }
+          return r
+        })
+      }
+
+      function settle(sessionId, answer) {
+        var p = pending.get(sessionId)
+        if (!p) return
+        pending.delete(sessionId)
+        // A new decision supersedes any in-flight assertion (e.g. the
+        // auto-revert that started when the modal opened).
+        epoch.set(sessionId, (epoch.get(sessionId) || 0) + 1)
+        // From here until the assertion loop finishes, this plugin owns the
+        // selection: gate evaluate() so it cannot re-open the modal and fight
+        // the very write we are making.
+        holding.add(sessionId)
+        var decision = epoch.get(sessionId)
+
+        if (answer === 'compact') {
+          // Still on the BIG (old) model: compact first, then move to the small
+          // one once the context has actually shrunk.
+          // Target window is known here: the modal only opens for a resolvable
+          // target. Fall back to the current sample if it somehow vanished.
+          var win = resolveWindow(p.toSel, config)
+          if (typeof win !== 'number') win = usageOf(sessions, sessionId) || 0
+          runCompactAndWait(sessions, sessionId, Math.floor(win * config.ratio)).then(function (u) {
+            if (disposed || !stops.has(sessionId) || epoch.get(sessionId) !== decision) return
+            console.info('[context-guard] post-compact usage ' + (u == null ? '?' : Math.round(u)) + ' -> switching to ' + p.toKey)
+            applyTarget(sessionId, p).then(function () {
+              assertSelection(sessionId, p.toSel, 'compact-then-switch')
+            })
+          })
+        } else if (answer === 'switch') {
+          // User accepts the risk: apply the small model, then confirm it stuck.
+          applyTarget(sessionId, p).then(function () {
+            assertSelection(sessionId, p.toSel, 'switch-anyway')
+          })
+        } else {
+          // 保持原模型 / dismissed: the model MUST end up back on the old one.
+          // Verify and retry rather than trusting a single fire-and-forget call.
+          assertSelection(sessionId, p.fromSel, 'stay-on-old-model')
+        }
+      }
+
+      function evaluate(sessionId, binding) {
+        try {
+          // While our modal is open, or while an assertion loop is writing the
+          // selection, the projection moves because of US. Ignore those changes
+          // so we never treat our own write as a user switch.
+          if (pending.has(sessionId) || holding.has(sessionId)) return
+
+          var modelFace = face(binding, 'modelSelection')
+          var pressureFace = face(binding, 'contextPressure')
+          var selSnap = modelFace ? modelFace.getSnapshot() : null
+          var pressure = pressureFace ? pressureFace.getSnapshot() : null
+
+          // `next` is what the next request will use; fall back to lastUsed.
+          var target = (selSnap && (selSnap.next || selSnap.lastUsed)) || null
+          var key = routeKey(target)
+          if (!key || !target.provider || !target.model) return
+
+          var prevKey = committed.get(sessionId)
+          // First sighting: this is the session's current model — adopt, no prompt.
+          if (prevKey === undefined) {
+            committed.set(sessionId, key)
+            committedSel.set(sessionId, { provider: target.provider, model: target.model, reasoningEffort: target.reasoningEffort })
+            return
+          }
+          // No change from what the user last confirmed: nothing to do.
+          if (prevKey === key) return
+
+          var fromSel = committedSel.get(sessionId)
+          var usage = pressure && (pressure.projectedTokens != null ? pressure.projectedTokens : pressure.pressureTokens)
+          if (typeof usage !== 'number' || !isFinite(usage) || usage <= 0) {
+            // No pressure sample yet; wait for the contextPressure frame to judge.
+            return
+          }
+
+          // Resolve the TARGET model's window. Unknown models are NOT blocked:
+          // a false alarm on a 1M model is worse than a missed warning.
+          var window = resolveWindow(target, config)
+          if (typeof window !== 'number' || !(window > 0)) {
+            committed.set(sessionId, key)
+            committedSel.set(sessionId, { provider: target.provider, model: target.model, reasoningEffort: target.reasoningEffort })
+            console.info('[context-guard] allow ' + prevKey + ' -> ' + key +
+              ' | usage ' + Math.round(usage) + ' | window unknown -> not guarded')
+            return
+          }
+          var threshold = Math.floor(window * config.ratio)
+          var over = usage >= threshold
+
+          // Under the threshold (or user already allowed this exact route): accept.
+          if (!over || suppress.get(sessionId) === key) {
+            if (suppress.get(sessionId) === key) suppress.delete(sessionId)
+            committed.set(sessionId, key)
+            committedSel.set(sessionId, { provider: target.provider, model: target.model, reasoningEffort: target.reasoningEffort })
+            console.info('[context-guard] allow ' + prevKey + ' -> ' + key +
+              ' | usage ' + Math.round(usage) + ' | warn@' + threshold)
+            return
+          }
+
+          // OVER the safe threshold. Hold the pending intent and ASK FIRST;
+          // kick off the revert to the old model in parallel. The modal never
+          // depends on the revert RPC succeeding, so a remote hiccup can't make
+          // the guard silently disappear.
+          var toSel = { provider: target.provider, model: target.model, reasoningEffort: target.reasoningEffort }
+          pending.set(sessionId, { fromSel: fromSel, toSel: toSel, toKey: key })
+          console.info('[context-guard] BLOCKED switch ' + prevKey + ' -> ' + key +
+            ' | usage ' + Math.round(usage) + ' | target window ' + window +
+            ' | warn@' + threshold)
+
+          // Revert to the old model NOW, verified, so an abandoned modal / a
+          // refresh cannot leave the oversized selection live. The modal itself
+          // does not wait on this: it must appear regardless of the RPC result.
+          assertSelection(sessionId, fromSel, 'auto-revert')
+
+          var detail =
+            '当前会话上下文约 ' + fmtK(Math.round(usage)) + ' token，' +
+            '目标模型 ' + key + ' 的窗口约 ' + fmtK(window) +
+            '（按 ' + Math.round(config.ratio * 100) + '% = ' + fmtK(threshold) + ' 预警）。' +
+            '直接发送下一条消息可能因超出上下文而报错。\n\n' +
+            '已为你暂时保持在原模型 ' + prevKey + '，请选择：'
+
+          ask(detail).then(function (answer) {
+            settle(sessionId, answer === true ? 'compact' : answer === false ? 'switch' : 'dismiss')
+          })
+        } catch (e) {
+          console.warn('[context-guard] evaluate failed:', e)
+        }
+      }
+
+
+      // A store subscriber MUST never throw: the host notifies UI subscribers
+      // on the same dispatch, and a throw here can abort that notification
+      // pass (the model label then only refreshes on a full reload). Harden
+      // every callback so this plugin can never disturb the host's UI loop.
+      function guard(fn) {
+        return function () {
+          try { return fn.apply(null, arguments) } catch (e) { console.warn('[context-guard]', e) }
+        }
+      }
+
+      function face(binding, key) {
+        try {
+          var p = binding && binding.session && binding.session.projections
+          var f = p && typeof p.faceOf === 'function' ? p.faceOf(key) : null
+          return f && typeof f.subscribe === 'function' && typeof f.getSnapshot === 'function' ? f : null
+        } catch (_) { return null }
+      }
+
+      function bindSession(sessionId) {
+        if (stops.has(sessionId)) return
+        var binding
+        try { binding = sessions.binding(sessionId) } catch (_) { binding = undefined }
+        if (!binding || !binding.session || !binding.session.projections) return
+
+        var tick = guard(function () { evaluate(sessionId, binding) })
+        var unsubs = []
+        var mf = face(binding, 'modelSelection')
+        var pf = face(binding, 'contextPressure')
+        if (mf) { try { unsubs.push(mf.subscribe(tick)) } catch (e) { console.warn('[context-guard] modelSelection subscribe failed', e) } }
+        if (pf) { try { unsubs.push(pf.subscribe(tick)) } catch (e) { console.warn('[context-guard] contextPressure subscribe failed', e) } }
+        if (unsubs.length === 0) return
+        stops.set(sessionId, function () { for (var i = 0; i < unsubs.length; i++) { try { unsubs[i]() } catch (_) {} } })
+        tick()
+        if (autoEngine) autoEngine.bind(sessionId, binding)
+      }
+
+      function unbindSession(sessionId) {
+        if (autoEngine) autoEngine.unbind(sessionId)
+        if (pending.has(sessionId)) closeModal()
+        var stop = stops.get(sessionId)
+        if (stop) { try { stop() } catch (_) {} stops.delete(sessionId) }
+        committed.delete(sessionId)
+        committedSel.delete(sessionId)
+        pending.delete(sessionId)
+        suppress.delete(sessionId)
+        holding.delete(sessionId)
+        epoch.set(sessionId, (epoch.get(sessionId) || 0) + 1)
+      }
+
+      // Bind ONLY the conversation currently mounted in the DOM. The old
+      // implementation subscribed every historical Session in sessions.list,
+      // which made startup cost grow with the user's archive. Conversation UI
+      // marks the active root with data-conversation-session="<id>"; observing
+      // that root gives us precise enter/leave lifecycle without loading all
+      // historical projection faces.
+      function activeDomSessionId() {
+        try {
+          if (!document || typeof document.querySelector !== 'function') return null
+          var node = document.querySelector('[data-conversation-session]')
+          return node ? node.getAttribute('data-conversation-session') : null
+        } catch (_) { return null }
+      }
+
+      var settingsSessionId
+      var reconcileCurrent = guard(function () {
+        if (disposed) return
+        var current = activeDomSessionId()
+        if (autoSettings) autoSettings.mount()
+        if (autoSettings && settingsSessionId !== current) { settingsSessionId = current; autoSettings.refresh() }
+        var bound = Array.from(stops.keys())
+        for (var i = 0; i < bound.length; i++) if (bound[i] !== current) unbindSession(bound[i])
+        if (!current) return
+        var isSub = false
+        try { isSub = typeof sessions.subagentAddress === 'function' && !!sessions.subagentAddress(current) } catch (_) { isSub = false }
+        if (!isSub) bindSession(current)
+      })
+
+      autoEngine = createAutoEngine({
+        sessions: sessions,
+        onStatus: function () { if (autoSettings) autoSettings.updateStatus() },
+        currentSelection: currentSelection,
+        selectModel: selectModel,
+        assertSelection: assertSelection,
+        begin: function (id) { epoch.set(id, (epoch.get(id) || 0) + 1); holding.add(id) },
+        end: function (id) { holding.delete(id); if (autoSettings) autoSettings.refresh() },
+        commit: function (id, target) { committed.set(id, routeKey(target)); committedSel.set(id, target) },
+        compact: function (id, threshold) { return runCompactAndWait(sessions, id, threshold) },
+        usage: function (id) { return usageOf(sessions, id) },
+        resolveWindow: function (target) { return resolveWindow(target, config) },
+        isCurrent: function (id) { return !disposed && stops.has(id) && activeDomSessionId() === id }
+      })
+      // Discover models lazily when settings opens, never during host startup.
+      try {
+        autoSettings = createAutoSettings({
+          getSessionId: activeDomSessionId,
+          getConfig: autoEngine.getConfig,
+          saveConfig: autoEngine.saveConfig,
+          getStatus: function (id) { var s = autoEngine.getStatus(id); return s.message + (s.error ? '：' + s.error : '') },
+          getCatalog: function () {
+            var ns = remoteNS()
+            if (!ns || typeof ns.modelCatalog !== 'function') return Promise.reject(new Error('模型目录服务不可用'))
+            return Promise.resolve(ns.modelCatalog()).then(function (r) {
+              if (r && r.ok === false) throw new Error(r.error && r.error.message || '加载模型目录失败')
+              var v = r && r.ok === true ? r.value : r
+              return v && v.groups || []
+            })
+          }
+        })
+      } catch (e) { console.warn('[context-guard] 自动切换设置界面初始化失败', e) }
+      reconcileCurrent()
+      // The client plugin can start a few frames before Conversation mounts its
+      // root. Retry briefly so the first opened session is captured even when
+      // no mutation reaches us during initial hydration.
+      var initialTimers = [100, 300, 800].map(function (delay) {
+        return setTimeout(reconcileCurrent, delay)
+      })
+      var domObserver
+      var reconcileTimer = null
+      function scheduleReconcile() {
+        if (reconcileTimer !== null) return
+        reconcileTimer = setTimeout(function () {
+          reconcileTimer = null
+          reconcileCurrent()
+        }, 50)
+      }
+      try {
+        if (typeof MutationObserver === 'function' && document && document.body) {
+          domObserver = new MutationObserver(scheduleReconcile)
+          domObserver.observe(document.body, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            attributeFilter: ['data-conversation-session']
+          })
+        }
+      } catch (e) { console.warn('[context-guard] active-session observer unavailable', e) }
+
+      return function () {
+        disposed = true
+        if (autoEngine) autoEngine.dispose()
+        if (autoSettings) autoSettings.dispose()
+        for (var t of initialTimers) try { clearTimeout(t) } catch (_) {}
+        try { if (reconcileTimer !== null) clearTimeout(reconcileTimer) } catch (_) {}
+        try { if (domObserver) domObserver.disconnect() } catch (_) {}
+        for (var s of Array.from(stops.values())) try { s() } catch (_) {}
+        stops.clear(); committed.clear(); committedSel.clear(); pending.clear(); suppress.clear()
+        holding.clear(); epoch.clear()
+        closeModal()
+      }
+    }
+
+    function apply(ctx) {
+      // Cordis authorizes services by DOT PATH, one level at a time: injecting
+      // 'remote' lets us read ctx.remote but NOT ctx.remote.session — that
+      // needs 'remote.session' declared explicitly (which is exactly what the
+      // built-in model-selection plugin does before calling
+      // ctx.remote.session.selectModel). Declaring only 'remote' made every
+      // programmatic revert throw "cannot get property remote.session without
+      // inject", which is why "保持原模型" never actually switched back.
+      try {
+        if (!ctx || typeof ctx.inject !== 'function') return
+        // Cordis requires both the root namespace and the dotted child to be
+        // declared when code reads ctx.remote.session.
+        ctx.inject(['sessions', 'remote', 'remote.session'], function (scope) {
+          try {
+            var stop = start(scope)
+            if (stop) console.info('[context-guard] active: risky model switches will be held until you confirm')
+            if (stop && typeof scope.effect === 'function') {
+              scope.effect(function () { return stop }, 'context-guard watchers')
+            }
+          } catch (e) { console.warn('[context-guard] start failed', e) }
+        })
+      } catch (e) { console.warn('[context-guard] apply failed', e) }
+    }
+
+    exports.apply = apply
+    exports.inject = ['sessions', 'remote', 'remote.session']
+    return module.exports
+  }
+})

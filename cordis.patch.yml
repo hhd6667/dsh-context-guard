@@ -1,0 +1,12 @@
+# dsh-context-guard: local bundle layer.
+#
+# Mounts the host half (empty apply) so the Loader also serves the browser
+# half declared in package.json `dsh.client`. All behavior is client-side;
+# see dsh/client.js. Tunables (warning ratio and the per-model window table)
+# live as constants at the top of dsh/client.js — edit them there and restart.
+#
+# The browser model catalog omits per-model contextWindow (id/name/reasoning
+# only), which is why the client keeps its own provider/model -> window table.
+- insert:
+    - id: context-guard
+      name: 'dsh-context-guard'
