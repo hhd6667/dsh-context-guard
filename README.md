@@ -1,61 +1,80 @@
 # dsh-context-guard
 
-A pure **browser-side** plugin for [DeepSeek Harness (DSH)](https://www.npmjs.com/package/@deepseek-ai/dsh) that protects large-context sessions when switching models, and can automatically fail over to a backup model when the current one runs out of quota.
+**English** · [简体中文](README.zh-CN.md)
 
-- 中文说明见下文。
-- No build step, no React, no native module. All logic runs in the web client; the host half is an empty bundle mount.
-- Tested against DSH web profile `0.2.0-rc.2` (Node 24, Windows). Other versions are not verified.
+A pure browser-side plugin for [DeepSeek Harness (DSH)](https://www.npmjs.com/package/@deepseek-ai/dsh). It protects large-context sessions when switching models and can automatically fail over to a user-selected model after quota or rate-limit errors.
 
-## What it does
+- The interface follows the DSH language setting (Chinese/English). The automatic continuation prompt is sent in the active interface language.
+- No build step, React dependency, native module, credential, or background worker is required.
+- The host entry is an empty bundle mount; all behavior runs in the DSH web client.
+- Developed and verified against the DSH web profile `0.2.0-rc.2` on Windows/Node 24. Compatibility with other versions is not guaranteed.
 
-### 1. Context guard on manual model switch
+## Features
 
-Switching a session that grew on a 1M model to a smaller model (e.g. 256K) does not fail at switch time — it fails on the **next** request, when the oversized prompt is sent.
+### Context guard for manual model switching
 
-The plugin watches the active session's `modelSelection` and `contextPressure` projections. When a switch would put the current context past the target model's safe threshold (default 70% of its window), it:
+Switching a session that grew on a large-context model to a smaller model normally succeeds at selection time but can fail on the next request, when the oversized prompt is sent.
 
-1. reverts the selection to the previous model immediately;
-2. shows an opaque, theme-aware dialog offering:
-   - **先压缩再切换** — run `/compact`, wait for pressure to drop, then switch;
-   - **仍然切换** — switch anyway;
-   - **保持原模型** — stay on the previous model.
+The plugin watches the active session's `modelSelection` and `contextPressure` projections. If the current usage reaches the target model's safety threshold (70% by default), it:
 
-Every programmatic selection is read back from the projection and retried/verified, so a rejected or raced `selectModel` call cannot silently leave the wrong model active.
+1. immediately reverts to the previous model;
+2. displays an opaque, theme-aware dialog with three choices:
+   - **Compact then switch** — run `/compact`, wait until context pressure drops, then switch;
+   - **Switch anyway** — accept the risk and switch immediately;
+   - **Keep current model** — stay on the previous model.
 
-### 2. Automatic failover on quota / rate-limit errors
+Programmatic model selections are read back from the projection, retried when the session is busy, and verified. This prevents a failed or raced RPC from silently leaving the wrong model active. Closing or refreshing the page also keeps the previously selected model rather than silently applying a risky switch.
 
-An **自动切换** button in the composer toolbar opens per-session settings where you can:
+### Automatic failover for quota/rate-limit errors
 
-- enable/disable automatic failover for the current session;
-- pick and **order** candidate models from the live model catalog;
-- optionally override a candidate's context window in tokens.
+The **Auto switch** button in the composer toolbar opens settings for the current session. You can:
 
-When the active turn ends with `QUOTA`, `ACCOUNT_QUOTA`, `RATE_LIMIT`, HTTP 429, or an explicit insufficient-balance/quota message:
+- enable or disable automatic failover independently for each conversation;
+- choose candidates from the live model catalog;
+- drag-free reorder candidates using up/down controls (top = highest priority);
+- manually specify a context window in tokens for a model not in the built-in table.
 
-1. the plugin waits for the turn to finish;
-2. picks the next candidate in priority order, skipping routes that already failed in this chain;
-3. checks the candidate's window at 70%; if the context is too large it runs `/compact` first and only proceeds once pressure is actually below the threshold;
-4. switches and verifies the new selection;
-5. sends exactly one continuation message asking the model to resume the interrupted task from existing progress.
+When a live turn terminates with `QUOTA`, `ACCOUNT_QUOTA`, `RATE_LIMIT`, HTTP 429, or an explicit insufficient-balance/quota message, the plugin:
 
-Settings default to **off** and are stored per session in the browser's `localStorage`.
+1. waits until the current turn is no longer running;
+2. chooses the next candidate, skipping routes that already failed in the current chain;
+3. checks context pressure against 70% of the candidate window;
+4. runs `/compact` first when needed and verifies that pressure actually dropped;
+5. switches and verifies the resulting model selection;
+6. sends exactly one queued continuation message asking the model to resume from existing progress without repeating completed work.
 
-## Why a local window table
+Failover is disabled by default. Settings are stored per session in the browser's `localStorage`.
 
-The browser model catalog intentionally omits per-model `contextWindow` (it only carries id/name/description/reasoning). The plugin therefore keeps a small provider/model → window table (`DEFAULTS` near the top of [`dsh/client.js`](dsh/client.js)), keyed primarily by model id, with exact `provider/model` overrides and substring patterns.
+## Context windows
 
-- A model that cannot be resolved is **not blocked** and **not used for auto-failover** (a false alarm on a 1M model is worse than a miss).
-- For an unknown candidate you can fill in its real window in the settings panel; the value overrides the table for that candidate.
-- Edit `DEFAULTS` (ratio, routes, models, patterns) and restart to tune built-in values.
+The browser model catalog intentionally does not expose an authoritative per-model `contextWindow`; it provides identity and metadata fields but not the context limit. The plugin therefore keeps a small local table in `DEFAULTS` near the top of [`dsh/client.js`](dsh/client.js).
+
+Resolution uses:
+
+1. exact `provider/model` overrides;
+2. model ID;
+3. conservative substring patterns.
+
+If a model cannot be resolved:
+
+- the manual context guard does **not** block it, avoiding false alarms on an unrecognized 1M model;
+- automatic failover does **not** use it as a safe candidate unless you enter a real context-window value in settings.
+
+The override must be the model's **context window**, not its maximum output length. Known examples in the current build include `deepseek-flash` at 1,000,000 tokens and `ark-code-latest` at 262,144 tokens.
 
 ## Install
 
-The plugin ships as a DSH web-profile bundle. Using the `web` profile (directory `~/.dsh/profiles/web` on all platforms):
+The package is a web-profile bundle. These steps describe a local profile installation from a copy of the repository; DSH may provide other plugin installation mechanisms in future versions.
 
-1. Make this package available to the profile, e.g. copy it under `vendor/dsh-context-guard` and add a file dependency, or install it however you install profile plugins:
+1. Copy the package into the web profile, for example:
+
+   ```text
+   ~/.dsh/profiles/web/vendor/dsh-context-guard
+   ```
+
+2. Add it to `~/.dsh/profiles/web/package.json`:
 
    ```jsonc
-   // ~/.dsh/profiles/web/package.json
    {
      "dependencies": {
        "dsh-context-guard": "file:vendor/dsh-context-guard"
@@ -63,7 +82,7 @@ The plugin ships as a DSH web-profile bundle. Using the `web` profile (directory
    }
    ```
 
-2. Register the bundle in the same file:
+3. Register it in the same file, after the base and web application bundles:
 
    ```jsonc
    {
@@ -79,41 +98,41 @@ The plugin ships as a DSH web-profile bundle. Using the `web` profile (directory
    }
    ```
 
-3. Restart `dsh web` and refresh the page.
+4. Restart `dsh web`, then refresh the browser page.
 
-The package's `cordis.patch.yml` mounts the (empty) host half so the loader also serves the browser half declared in `dsh.client`.
+`cordis.patch.yml` mounts the empty host half so the loader also serves `dsh/client.js`, which is declared through `dsh.client`.
 
-## Use
+## Usage
 
-- **Manual guard:** just switch models as usual on a large-context session; the dialog appears only when the target window is too small.
-- **Auto failover:** click **自动切换** in the composer toolbar, add and order candidates for the current session, then enable it. The button turns green while enabled for that session.
+- Switch models normally. The warning appears only when the current context is close to or above the target model's threshold.
+- Click **Auto switch** in the composer toolbar to configure failover candidates for the conversation currently displayed.
+- The toolbar button is green when failover is enabled for that session and uses its normal appearance when disabled.
+- Leave “Window tokens” blank for known models. Enter the actual context window for unknown models.
+- Only the currently displayed conversation is observed. Leaving the page or session cancels an in-flight automatic action.
 
 ## Limitations
 
-- Only the conversation **currently open in the page** is watched; leaving the page or session cancels an in-flight automatic action. Nothing runs in a background worker.
-- Failover fires on a **terminal** `turn/end` error. If a provider uses an always-retry policy, the turn never terminates and the plugin does not take over.
-- Generic network, authentication, cancellation, and server errors do not trigger failover.
-- After switching, continuation is a **new queued message**, not a replay or low-level resume of the failed request. A model may repeat some work; verify non-idempotent external actions yourself.
-- If the exhausted model cannot run `/compact`, the plugin will not force an oversized prompt onto a smaller model; it tries larger-window candidates, then stops.
-- `localStorage` is per browser/profile; settings do not sync across browsers or incognito sessions.
+- There is no browser-side API to replay the exact failed provider request. Failover sends a new queued continuation message; the model may repeat some reasoning. Check non-idempotent external actions yourself.
+- Failover requires a terminal `turn/end` error. A provider configured to retry forever may never expose such an event.
+- Generic authentication, network, cancellation, and unrelated server errors do not trigger failover.
+- If the exhausted model cannot run `/compact`, the plugin will not force an oversized prompt into a smaller candidate; it tries safer candidates and then stops.
+- Only the open page is protected. No service worker or background process continues after the page closes.
+- `localStorage` is per browser/profile and does not synchronize across browsers, machines, or incognito sessions.
+- The local model-window table requires maintenance when providers introduce new models.
 
 ## Uninstall
 
-Remove `dsh-context-guard` from `dsh.profile.bundles` and `dependencies` in the profile `package.json`, remove the package directory, then restart `dsh web`. Clearing site data removes the stored per-session settings.
+1. Remove `dsh-context-guard` from `dsh.profile.bundles`.
+2. Remove it from `dependencies`.
+3. Delete the package directory from the profile.
+4. Restart `dsh web` and refresh the page.
+
+Clearing site data removes stored per-session failover settings.
 
 ## License
 
-[GNU General Public License v3.0 only](LICENSE) (SPDX: `GPL-3.0-only`).
+Copyright (C) 2026 dsh-context-guard contributors
 
-This is strong copyleft: anyone who conveys this program, or a modified version, must make the corresponding source code available under GPL-3.0-compatible terms. Private use and modification remain allowed; there is no warranty. This is a client-side browser plugin, so AGPL's network-interaction clause is not needed.
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
----
-
-## 中文简介
-
-DSH Web 客户端插件：
-
-1. **手动切换保护**：在大上下文会话切换到小窗口模型时，先回退并弹窗，可选择「先压缩再切换」「仍然切换」「保持原模型」；所有程序化切换都会回读投影校验并重试。
-2. **额度/限流自动切换**：输入框工具栏的「自动切换」按钮可按会话启用，手动添加并排序候选模型、填写未知模型窗口。出现 `QUOTA` / `ACCOUNT_QUOTA` / `RATE_LIMIT` / 429 / 余额不足等终止错误时，按顺序切换，必要时先 `/compact` 到目标窗口 70% 以下，再发送一次续接消息。
-
-默认关闭，配置按会话保存在浏览器 `localStorage`；未知窗口不会被当作安全模型。具体限制见上方 **Limitations**。
+See [LICENSE](LICENSE) for the complete text (SPDX: `GPL-3.0-only`).

@@ -1,7 +1,7 @@
 {
   "name": "dsh-context-guard",
-  "version": "0.1.0",
-  "description": "DSH web client plugin: warn before switching a large-context session to a smaller model, optionally compact first, and fail over to user-chosen models on quota/rate-limit errors.",
+  "version": "0.2.0",
+  "description": "Bilingual DSH web client plugin: guard risky model switches and automatically fail over to user-chosen models on quota/rate-limit errors.",
   "type": "module",
   "license": "GPL-3.0-only",
   "exports": {
