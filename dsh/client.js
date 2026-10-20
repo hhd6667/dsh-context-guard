@@ -57,9 +57,10 @@ window.__ModuleLoader__.load({
     // ---- localization (follows the DSH locale service; zh default, en fallback)
     var LOCALE_TEXT = {
       'auto.title': { zh: '自动切换', en: 'Auto switch' },
+      'auto.titleWithGroup': { zh: '自动切换（{name}）', en: 'Auto switch ({name})' },
       'auto.settings': { zh: '自动切换设置', en: 'Automatic failover settings' },
       'auto.close': { zh: '关闭', en: 'Close' },
-      'auto.intro': { zh: '仅保存当前会话设置。编辑候选模型不会立即切换模型。候选顺序表示优先级。', en: 'Saved for the current session only. Editing candidates does not switch the model. Order is failover priority.' },
+      'auto.introShort': { zh: '仅保存当前会话 · 候选顺序即优先级', en: 'Per-session only · order = priority' },
       'auto.session': { zh: '当前会话：', en: 'Current session: ' },
       'auto.noSession': { zh: '未打开会话', en: 'No session open' },
       'auto.enable': { zh: '启用本会话自动切换', en: 'Enable automatic failover for this session' },
@@ -73,6 +74,9 @@ window.__ModuleLoader__.load({
       'auto.groupSaveShort': { zh: '存为组', en: 'Save as' },
       'auto.groupCancel': { zh: '取消', en: 'Cancel' },
       'auto.groupApply': { zh: '应用', en: 'Apply' },
+      'auto.groupRename': { zh: '重命名组', en: 'Rename group' },
+      'auto.groupNameRequired': { zh: '组名不能为空', en: 'The group name cannot be empty' },
+      'auto.groupNameTaken': { zh: '已存在同名的组，请换一个名字', en: 'A group with that name already exists; choose another name' },
       'auto.groupDelete': { zh: '删除', en: 'Delete' },
       'auto.groupStorageUnavailable': { zh: '浏览器存储不可用，无法保存候选组', en: 'Browser storage is unavailable; cannot save candidate groups' },
       'auto.groupSaveFailed': { zh: '候选组保存失败：', en: 'Could not save candidate groups: ' },
@@ -525,15 +529,17 @@ function createAutoSettings(options) {
     ':host,*{box-sizing:border-box}',
     '.cg2-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(15,23,42,.55);backdrop-filter:blur(2px);pointer-events:auto;padding:20px}',
     '.cg2-panel{background:#fff;color:#172033;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 24px 80px rgba(2,6,23,.28);width:640px;max-width:100%;max-height:88vh;overflow:auto;padding:0}',
-    '.cg2-head{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 20px 14px;background:#fff;border-bottom:1px solid #eef2f7}',
+    '.cg2-head{position:sticky;top:0;z-index:2;display:flex;flex-direction:column;gap:6px;padding:16px 20px 12px;background:#fff;border-bottom:1px solid #eef2f7}',
+    '.cg2-headrow{display:flex;align-items:center;justify-content:space-between;gap:12px}',
     '.cg2-title{font-size:17px;font-weight:650;margin:0;display:flex;align-items:center;gap:9px}',
     '.cg2-title .dot{width:9px;height:9px;border-radius:50%;background:#15803d;flex:none}',
+    '.cg2-sub{display:flex;align-items:center;gap:8px;min-width:0;font-size:11.5px;color:#94a3b8;line-height:1.4}',
+    // Trailing reminder on the status line; pushed right and visually quiet.
+    '.cg2-subhint{margin-left:auto;align-self:center;padding-left:10px;border-left:1px solid #e2e8f0;color:#94a3b8;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:none}',
+    '.cg2-subsess{flex:0 1 auto;max-width:100%;user-select:all;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:1px 7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.cg2-close{width:30px;height:30px;border-radius:8px;border:1px solid transparent;background:transparent;color:#64748b;font-size:18px;line-height:1;cursor:pointer;flex:none}',
     '.cg2-close:hover{background:#f1f5f9;color:#172033}',
-    '.cg2-body{padding:16px 20px 20px}',
-    '.cg2-hint{margin:0 0 12px;padding:9px 12px;border-radius:10px;background:#f8fafc;border:1px solid #eef2f7;color:#64748b;font-size:12.5px;line-height:1.6}',
-    '.cg2-session{display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:12px;color:#64748b}',
-    '.cg2-session code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:2px 7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}',
+    '.cg2-body{padding:14px 20px 20px}',
     '.cg2-enable{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid #e2e8f0;border-radius:12px;background:#fbfdfe;margin-bottom:10px}',
     '.cg2-enable strong{font-size:14px;font-weight:600}',
     '.cg2-enable small{display:block;color:#94a3b8;font-size:11.5px;margin-top:2px}',
@@ -602,9 +608,9 @@ function createAutoSettings(options) {
     ':host([data-theme="dark"]) .cg2-title{color:#f1f5f9}',
     ':host([data-theme="dark"]) .cg2-close{color:#94a3b8}',
     ':host([data-theme="dark"]) .cg2-close:hover{background:#2c3a4f;color:#f1f5f9}',
-    ':host([data-theme="dark"]) .cg2-hint{background:#152033;border-color:#2c3a4f;color:#94a3b8}',
-    ':host([data-theme="dark"]) .cg2-session{color:#94a3b8}',
-    ':host([data-theme="dark"]) .cg2-session code{background:#152033;border-color:#2c3a4f;color:#cbd5e1}',
+    ':host([data-theme="dark"]) .cg2-sub{color:#64748b}',
+    ':host([data-theme="dark"]) .cg2-subhint{color:#64748b;border-left-color:#2c3a4f}',
+    ':host([data-theme="dark"]) .cg2-subsess{background:#152033;border-color:#2c3a4f;color:#cbd5e1}',
     ':host([data-theme="dark"]) .cg2-enable,:host([data-theme="dark"]) .cg2-cand{background:#1f2b3e;border-color:#2c3a4f}',
     ':host([data-theme="dark"]) .cg2-provider,:host([data-theme="dark"]) .cg2-note{color:#64748b}',
     ':host([data-theme="dark"]) .cg2-model{color:#e2e8f0}',
@@ -690,7 +696,7 @@ function createAutoSettings(options) {
 
   var launcher = button(T('auto.title'), function () { if (opened) close(); else open() })
   launcher.className = ''
-  launcher.style.cssText = 'height:30px;padding:0 11px;border:1px solid var(--dsw-alias-border-l2,#cbd5e1);border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#475569);font:600 12px/1.2 system-ui,sans-serif;white-space:nowrap;cursor:pointer;pointer-events:auto;transition:background .15s,color .15s,border-color .15s;'
+  launcher.style.cssText = 'height:30px;max-width:230px;padding:0 11px;border:1px solid var(--dsw-alias-border-l2,#cbd5e1);border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#475569);font:600 12px/1.2 system-ui,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;pointer-events:auto;transition:background .15s,color .15s,border-color .15s;'
   var launcherHost = document.createElement('span')
   launcherHost.style.cssText = 'display:inline-flex;align-items:center;flex:none;pointer-events:auto;'
   var launcherRoot = typeof launcherHost.attachShadow === 'function' ? launcherHost.attachShadow({ mode: 'open' }) : launcherHost
@@ -730,6 +736,7 @@ function createAutoSettings(options) {
   panel.tabIndex = -1
 
   var header = el('div'); header.className = 'cg2-head'
+  var titleRow = el('div'); titleRow.className = 'cg2-headrow'
   var titleWrap = el('div'); titleWrap.className = 'cg2-title'
   var titleDot = el('span'); titleDot.className = 'dot'
   var title = el('h2', T('auto.settings'))
@@ -738,14 +745,16 @@ function createAutoSettings(options) {
   var closeButton = el('button', '×'); closeButton.type = 'button'; closeButton.className = 'cg2-close'
   closeButton.setAttribute('aria-label', T('auto.close'))
   closeButton.addEventListener('click', close)
-  header.appendChild(titleWrap); header.appendChild(closeButton)
+  titleRow.appendChild(titleWrap); titleRow.appendChild(closeButton)
+  // Only the session id stays in the header; the one-line hint is shown beside
+  // the status text in the body instead.
+  var subtitle = el('div'); subtitle.className = 'cg2-sub'
+  var sessionTag = el('code', ''); sessionTag.className = 'cg2-subsess'
+  subtitle.appendChild(sessionTag)
+  header.appendChild(titleRow); header.appendChild(subtitle)
   panel.appendChild(header)
 
   var body = el('div'); body.className = 'cg2-body'
-  var intro = el('p', T('auto.intro'), ''); intro.className = 'cg2-hint'
-  var sessionLabel = el('div'); sessionLabel.className = 'cg2-session'
-  var sessionTag = el('code', ''); sessionTag.style.cssText = 'flex:1;'
-  sessionLabel.appendChild(el('span', T('auto.session'))); sessionLabel.appendChild(sessionTag)
 
   var enableRow = el('div'); enableRow.className = 'cg2-enable'
   var enableTextWrap = el('div')
@@ -769,7 +778,10 @@ function createAutoSettings(options) {
   var status = el('div'); status.className = 'cg2-status'
   var statusDot = el('span'); statusDot.className = 'sdot'
   var statusText = el('span')
-  status.appendChild(statusDot); status.appendChild(statusText)
+  // The one-line "per-session only / order = priority" reminder sits at the end
+  // of the status line, right after e.g. "自动备用模型已启用".
+  var subHint = el('span', T('auto.introShort')); subHint.className = 'cg2-subhint'
+  status.appendChild(statusDot); status.appendChild(statusText); status.appendChild(subHint)
   var errors = el('div', ''); errors.className = 'cg2-errors'
   errors.setAttribute('role', 'alert')
 
@@ -788,15 +800,20 @@ function createAutoSettings(options) {
   var groupWrap = el('div'); groupWrap.className = 'cg2-groups'
   var groupSelect = el('select'); groupSelect.className = 'cg2-gselect'
   groupSelect.setAttribute('aria-label', T('auto.groups'))
+  groupSelect.addEventListener('change', function () { updateGroupButtons() })
   var groupApply = button(T('auto.groupApply'), applySelectedGroup, 'cg2-gbtn')
   groupApply.type = 'button'; groupApply.disabled = true
   var groupDelete = button(T('auto.groupDelete'), deleteSelectedGroup, 'cg2-gbtn cg2-danger')
   groupDelete.type = 'button'; groupDelete.disabled = true
   var groupNew = button('＋ ' + T('auto.groupSaveShort'), toggleGroupSave, 'cg2-gbtn')
   groupNew.type = 'button'
+  // Renaming only touches the group's label; its candidate order is untouched.
+  var groupRename = button('✎', beginRename, 'cg2-gbtn')
+  groupRename.type = 'button'; groupRename.disabled = true
+  groupRename.title = T('auto.groupRename'); groupRename.setAttribute('aria-label', T('auto.groupRename'))
   var groupRow = el('div'); groupRow.className = 'cg2-grouprow'
   groupRow.appendChild(groupSelect); groupRow.appendChild(groupNew)
-  groupRow.appendChild(groupApply); groupRow.appendChild(groupDelete)
+  groupRow.appendChild(groupApply); groupRow.appendChild(groupRename); groupRow.appendChild(groupDelete)
   // The name input only appears after clicking "Save as", so the section stays a
   // single row until the user actually wants to store something.
   var groupSaveRow = el('div'); groupSaveRow.className = 'cg2-grouprow cg2-saverow'
@@ -814,13 +831,33 @@ function createAutoSettings(options) {
   })
   groupSaveRow.appendChild(groupName); groupSaveRow.appendChild(groupSave); groupSaveRow.appendChild(groupCancel)
   var groupSaving = false
+  // Empty while saving a NEW group; the selected group's id while renaming.
+  var renameTargetId = ''
   function setGroupSaving(on) {
     groupSaving = !!on
     groupSaveRow.style.display = groupSaving ? 'flex' : 'none'
-    if (groupSaving) Promise.resolve().then(function () { try { groupName.focus() } catch (_) {} })
-    else groupName.value = ''
+    groupSave.textContent = groupSaving && renameTargetId ? T('auto.groupRename') : T('auto.groupSave')
+    if (groupSaving) {
+      Promise.resolve().then(function () { try { groupName.focus(); groupName.select() } catch (_) {} })
+    } else {
+      renameTargetId = ''
+      groupName.value = ''
+    }
   }
-  function toggleGroupSave() { setGroupSaving(!groupSaving) }
+  function toggleGroupSave() {
+    // While renaming, this switches back to "save current list as a new group".
+    if (groupSaving && !renameTargetId) { setGroupSaving(false); return }
+    renameTargetId = ''
+    groupName.value = ''
+    setGroupSaving(true)
+  }
+  function beginRename() {
+    var g = groups.find(function (x) { return x.id === selectedGroupId() })
+    if (!g) return
+    renameTargetId = g.id
+    groupName.value = g.name
+    setGroupSaving(true)
+  }
   setGroupSaving(false)
   groupWrap.appendChild(groupRow); groupWrap.appendChild(groupSaveRow)
 
@@ -834,8 +871,6 @@ function createAutoSettings(options) {
   search.setAttribute('aria-label', T('auto.search'))
   var results = el('div'); results.className = 'cg2-results'
 
-  body.appendChild(intro)
-  body.appendChild(sessionLabel)
   body.appendChild(enableRow)
   body.appendChild(status); body.appendChild(errors)
   body.appendChild(candHead); body.appendChild(candidates)
@@ -851,6 +886,17 @@ function createAutoSettings(options) {
     statusKind = kind || ''
     status.className = 'cg2-status' + (statusKind ? ' s-' + statusKind : '')
   }
+  // The toolbar button names the saved group whose ordered candidates exactly
+  // match this session's current list, so you can see which group is in effect
+  // without opening the panel.
+  function matchGroup() {
+    if (!draft || !draft.candidates || !draft.candidates.length) return null
+    var wanted = draft.candidates.map(key).join('|')
+    for (var i = 0; i < groups.length; i++) {
+      if (groups[i].candidates.map(key).join('|') === wanted) return groups[i]
+    }
+    return null
+  }
   function updateLauncher() {
     var active = false
     try { active = !!(sessionId && options.getConfig(sessionId).enabled) } catch (_) {}
@@ -858,6 +904,14 @@ function createAutoSettings(options) {
     launcher.style.color = active ? '#ffffff' : 'var(--dsw-alias-label-secondary,#475569)'
     launcher.style.borderColor = active ? '#15803d' : 'var(--dsw-alias-border-l2,#cbd5e1)'
     launcher.title = active ? T('auto.enabledTip') : T('auto.disabledTip')
+    var label = T('auto.title')
+    var group = null
+    try { group = matchGroup() } catch (_) { group = null }
+    if (group) {
+      label = fill(T('auto.titleWithGroup'), { name: group.name })
+      launcher.title = label + ' — ' + launcher.title
+    }
+    launcher.textContent = label
     titleDot.style.background = active ? '#15803d' : '#94a3b8'
   }
   // Render the "limit that applies now" chip from getMeterNotice(). The host
@@ -954,6 +1008,8 @@ function createAutoSettings(options) {
       if (!disposed && sessionId === id) showStatus()
     })
     saveQueues.set(id, operation)
+    // Editing candidates can start/stop matching a saved group; relabel the button.
+    try { updateLauncher() } catch (_) {}
     showStatus()
   }
 
@@ -996,6 +1052,16 @@ function createAutoSettings(options) {
     store.setItem(GROUPS_KEY, JSON.stringify(groups))
   }
   function selectedGroupId() { return groupSelect.value || '' }
+  // The Apply/Delete buttons follow the current <select> value. Picking another
+  // entry only fires `change`, not a re-render, so they need their own listener
+  // or they stay stuck disabled after a delete.
+  function updateGroupButtons() {
+    var exists = groups.some(function (g) { return g.id === selectedGroupId() })
+    groupApply.disabled = !exists
+    groupDelete.disabled = !exists
+    groupRename.disabled = !exists
+    return exists
+  }
   function renderGroups() {
     var chosen = selectedGroupId()
     clear(groupSelect)
@@ -1008,14 +1074,36 @@ function createAutoSettings(options) {
       option.value = g.id
       groupSelect.appendChild(option)
     })
-    var exists = groups.some(function (g) { return g.id === chosen })
-    groupSelect.value = exists ? chosen : ''
-    groupApply.disabled = !exists
-    groupDelete.disabled = !exists
+    // Keep the current choice; if it was just deleted, fall back to the first
+    // remaining group so the row stays usable instead of going dead.
+    var keep = groups.some(function (g) { return g.id === chosen }) ? chosen : (groups.length ? groups[0].id : '')
+    groupSelect.value = keep
+    updateGroupButtons()
     groupSave.disabled = draft.candidates.length === 0
+    // Saving/applying/deleting a group can change which group is in effect, so
+    // keep the toolbar label in step with the list.
+    try { updateLauncher() } catch (_) {}
+  }
+  function renameSelectedGroup(id) {
+    var g = groups.find(function (x) { return x.id === id })
+    if (!g) { setGroupSaving(false); renderGroups(); return }
+    var name = groupName.value.trim()
+    if (!name) { errorText = T('auto.groupNameRequired'); showStatus(); return }
+    if (groups.some(function (x) { return x.id !== id && x.name === name })) {
+      errorText = T('auto.groupNameTaken'); showStatus(); return
+    }
+    // Only the label changes; the stored candidate order stays as it is.
+    g.name = name
+    try { writeGroups() } catch (error) { errorText = T('auto.groupSaveFailed') + message(error); showStatus() }
+    setGroupSaving(false)
+    renderGroups()
+    groupSelect.value = id
+    updateGroupButtons()
   }
   function saveCurrentAsGroup() {
     try {
+      // The pen button reuses this row: in rename mode only the name changes.
+      if (renameTargetId) { renameSelectedGroup(renameTargetId); return }
       if (!draft.candidates.length) return
       var name = groupName.value.trim() || T('auto.groupDefaultName')
       var existing = groups.find(function (g) { return g.name === name })
@@ -1029,8 +1117,7 @@ function createAutoSettings(options) {
       renderGroups()
       // renderGroups() rebuilt the <select>; re-select the (new or overwritten) group.
       groupSelect.value = normalized.id
-      groupApply.disabled = false
-      groupDelete.disabled = false
+      updateGroupButtons()
       setGroupSaving(false)
     } catch (error) { errorText = T('auto.groupSaveFailed') + message(error); showStatus() }
   }
@@ -1243,10 +1330,9 @@ function createAutoSettings(options) {
   }
   // Re-render static labels when DSH's language changes.
   function localize() {
-    launcher.textContent = T('auto.title')
     title.textContent = T('auto.settings')
     closeButton.setAttribute('aria-label', T('auto.close'))
-    intro.textContent = T('auto.intro')
+    subHint.textContent = T('auto.introShort')
     panel.setAttribute('aria-label', T('auto.settings'))
     enableStrong.textContent = T('auto.enable')
     enableSub.textContent = T('auto.perSessionHint')
@@ -1256,7 +1342,9 @@ function createAutoSettings(options) {
     groupApply.textContent = T('auto.groupApply')
     groupDelete.textContent = T('auto.groupDelete')
     groupNew.textContent = '＋ ' + T('auto.groupSaveShort')
-    groupSave.textContent = T('auto.groupSave')
+    groupRename.title = T('auto.groupRename')
+    groupRename.setAttribute('aria-label', T('auto.groupRename'))
+    groupSave.textContent = renameTargetId ? T('auto.groupRename') : T('auto.groupSave')
     groupCancel.textContent = T('auto.groupCancel')
     groupName.placeholder = T('auto.groupName')
     groupName.setAttribute('aria-label', T('auto.groupName'))
@@ -1284,6 +1372,8 @@ function createAutoSettings(options) {
       updateLauncher()
       updateMeter()
       renderGroups() // Save-group availability follows the current draft.
+      // Show the full session id (it is what you paste when debugging); the
+      // header row has the width for a 36-char UUID.
       sessionTag.textContent = sessionId || T('auto.noSession')
       sessionTag.title = sessionId || ''
       if (opened && changed) { renderCandidates(); renderCatalog() }

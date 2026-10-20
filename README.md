@@ -35,6 +35,10 @@ The **Auto switch** button in the composer toolbar opens settings for the curren
 - manually specify a context window in tokens for a model not in the built-in table;
 - save the current ordered list as a named **candidate group** and re-apply it to any session. Groups are shared across every session in this browser/profile. Applying a group only replaces the ordered candidates; it never toggles failover on by itself. A route later removed from DSH's model list is simply skipped at failover time (unknown window, rejected switch, or unconfirmed selection), so a stale group never blocks the chain and you do not have to prune it by hand.
 
+When this session's candidate order matches a saved group, the toolbar button names it, for example **Auto switch (Night)**, so you can see which group is in effect without opening the panel.
+
+Select a group and use ✎ to rename it (the stored order is untouched); **Delete** removes it. Renaming onto an existing name is refused.
+
 Adding a model or moving candidates up/down no longer snaps a long catalog/list back to the top; the scroll position is preserved.
 
 When a live turn terminates with `QUOTA`, `ACCOUNT_QUOTA`, `RATE_LIMIT`, HTTP 429, or an explicit insufficient-balance/quota message, the plugin:
