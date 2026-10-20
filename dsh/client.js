@@ -65,11 +65,26 @@ window.__ModuleLoader__.load({
       'auto.enable': { zh: '启用本会话自动切换', en: 'Enable automatic failover for this session' },
       'auto.perSessionHint': { zh: '关闭或离开页面不会在后台继续切换', en: 'No background failover after closing or leaving this page' },
       'auto.candidates': { zh: '候选模型', en: 'Candidate models' },
+      'auto.groups': { zh: '候选组（所有会话共用）', en: 'Candidate groups (shared across sessions)' },
+      'auto.groupChoose': { zh: '选择一个组…', en: 'Choose a group…' },
+      'auto.groupName': { zh: '组名，用于保存当前顺序', en: 'Group name to save the current order' },
+      'auto.groupDefaultName': { zh: '未命名组', en: 'Untitled group' },
+      'auto.groupSave': { zh: '保存当前为组', en: 'Save current as group' },
+      'auto.groupSaveShort': { zh: '存为组', en: 'Save as' },
+      'auto.groupCancel': { zh: '取消', en: 'Cancel' },
+      'auto.groupApply': { zh: '应用', en: 'Apply' },
+      'auto.groupDelete': { zh: '删除', en: 'Delete' },
+      'auto.groupStorageUnavailable': { zh: '浏览器存储不可用，无法保存候选组', en: 'Browser storage is unavailable; cannot save candidate groups' },
+      'auto.groupSaveFailed': { zh: '候选组保存失败：', en: 'Could not save candidate groups: ' },
       'auto.noCandidates': { zh: '尚未添加候选模型。', en: 'No candidate models yet.' },
       'auto.up': { zh: '上移', en: 'Move up' },
       'auto.down': { zh: '下移', en: 'Move down' },
       'auto.remove': { zh: '移除', en: 'Remove' },
-      'auto.windowTokens': { zh: '窗口 tokens：', en: 'Window tokens: ' },
+      'auto.windowTokens': { zh: '点击设置窗口 tokens', en: 'Click to set window tokens' },
+      'auto.windowTokensShort': { zh: 'tokens', en: 'tokens' },
+      'auto.windowSet': { zh: '设窗口', en: 'set window' },
+      'auto.windowConfirm': { zh: '确认窗口值', en: 'Confirm window' },
+      'auto.windowCustomTip': { zh: '已手动指定窗口（点击修改）：', en: 'Manual window override (click to edit): ' },
       'auto.windowDefault': { zh: '（默认）', en: ' (default)' },
       'auto.windowAuto': { zh: '自动获取', en: 'auto' },
       'auto.windowAutoTip': { zh: '从 DSH 模型设置自动获取；留空即使用它', en: 'Detected from DSH model settings; leave blank to use it' },
@@ -131,6 +146,8 @@ window.__ModuleLoader__.load({
       'st.switching': { zh: '正在切换到备用模型：', en: 'Switching to backup model: ' },
       'st.otherModel': { zh: '用户已选择其他模型，停止自动续接', en: 'Another model was selected; stopping automatic continuation' },
       'st.switchFailed': { zh: '备用模型切换失败：', en: 'Backup model switch failed: ' },
+      'st.switchSkipping': { zh: '该备用模型不可用，跳过并尝试下一个：', en: 'Backup model unavailable; skipping to the next one: ' },
+      'st.allSwitchesFailed': { zh: '所有备用模型都无法确认切换，未发送续接指令', en: 'No backup model could be confirmed; no continuation was sent' },
       'st.leftSession': { zh: '已离开当前会话，停止自动续接', en: 'You left the current session; stopping automatic continuation' },
       'st.notConfirmed': { zh: '未能确认备用模型，未发送续接指令', en: 'Could not confirm the backup model; no continuation was sent' },
       'st.continuing': { zh: '模型已切换，正在发送一次续接指令', en: 'Model switched; sending one continuation request' },
@@ -542,10 +559,17 @@ function createAutoSettings(options) {
     '.cg2-meta{min-width:0;flex:1}',
     '.cg2-provider{font-size:11px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.cg2-model{font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-    '.cg2-tools{display:flex;align-items:center;gap:5px;flex:none}',
+    '.cg2-tools{display:flex;align-items:center;gap:4px;flex:none}',
     '.cg2-win{display:flex;align-items:center;gap:4px;font-size:11.5px;color:#64748b}',
-    '.cg2-win input{width:108px;padding:5px 7px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#172033;font:12px/1.2 ui-monospace,Menlo,Consolas,monospace}',
+    // Compact window chip instead of an always-on 108px text box per row.
+    '.cg2-wchip{display:inline-flex;align-items:center;gap:3px;height:26px;padding:0 9px;border:1px solid #dbe2ea;border-radius:999px;background:#f1f5f9;color:#475569;font:600 11.5px/1 ui-monospace,Menlo,Consolas,monospace;cursor:pointer;white-space:nowrap;max-width:150px}',
+    '.cg2-wchip:hover{border-color:#94a3b8;background:#e8eef5}',
+    '.cg2-wchip.custom{background:#dcfce7;border-color:#86efac;color:#15803d}',
+    '.cg2-wchip.unknown{background:transparent;border-style:dashed;color:#94a3b8}',
+    '.cg2-wchip .wt{overflow:hidden;text-overflow:ellipsis}',
+    '.cg2-win input{width:84px;height:26px;padding:0 7px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#172033;font:12px/1 ui-monospace,Menlo,Consolas,monospace}',
     '.cg2-win input[aria-invalid="true"]{border-color:#dc2626;background:#fef2f2}',
+    '.cg2-wedit{height:26px;width:26px;padding:0;font-size:12px;border-radius:7px}',
     '.cg2-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;background:#fff;color:#334155;border:1px solid #cbd5e1;border-radius:8px;padding:6px 10px;cursor:pointer;font:600 12px/1 system-ui,sans-serif;white-space:nowrap}',
     '.cg2-btn:hover:not(:disabled){background:#f8fafc;border-color:#94a3b8}',
     '.cg2-btn:disabled{opacity:.45;cursor:not-allowed}',
@@ -555,6 +579,14 @@ function createAutoSettings(options) {
     '.cg2-reload{padding:6px 10px}',
     '.cg2-search{width:100%;margin:0 0 10px;padding:9px 12px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;color:#172033;font:inherit}',
     '.cg2-results{display:grid;gap:4px;max-height:240px;overflow:auto;border:1px solid #eef2f7;border-radius:12px;padding:4px;background:#fbfdfe}',
+    '.cg2-groups{margin-top:10px;padding:10px;border:1px solid #e2e8f0;border-radius:12px;background:#fbfdfe}',
+    '.cg2-grouprow{display:flex;gap:6px;align-items:center}',
+    '.cg2-saverow{margin-top:8px;display:none}',
+    '.cg2-gselect{flex:1;min-width:0;padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#172033;font:600 12.5px/1.2 system-ui,sans-serif}',
+    '.cg2-gbtn{padding:7px 10px;font-size:12px;flex:none}',
+    '.cg2-groups .cg2-search{margin:0;flex:1;min-width:0;padding:7px 10px}',
+    ':host([data-theme="dark"]) .cg2-groups{background:#1f2b3e;border-color:#2c3a4f}',
+    ':host([data-theme="dark"]) .cg2-gselect{background:#152033;border-color:#334155;color:#e2e8f0}',
     '.cg2-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 10px;border-radius:8px;min-width:0}',
     '.cg2-row:hover{background:#f1f5f9}',
     '.cg2-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;min-width:0}',
@@ -577,6 +609,10 @@ function createAutoSettings(options) {
     ':host([data-theme="dark"]) .cg2-provider,:host([data-theme="dark"]) .cg2-note{color:#64748b}',
     ':host([data-theme="dark"]) .cg2-model{color:#e2e8f0}',
     ':host([data-theme="dark"]) .cg2-win{color:#94a3b8}',
+    ':host([data-theme="dark"]) .cg2-wchip{background:#22304a;border-color:#334155;color:#cbd5e1}',
+    ':host([data-theme="dark"]) .cg2-wchip:hover{background:#2c3a4f;border-color:#475569}',
+    ':host([data-theme="dark"]) .cg2-wchip.custom{background:#10351f;border-color:#15803d;color:#86efac}',
+    ':host([data-theme="dark"]) .cg2-wchip.unknown{background:transparent;color:#64748b}',
     ':host([data-theme="dark"]) .cg2-win input,:host([data-theme="dark"]) .cg2-search{background:#152033;border-color:#334155;color:#e2e8f0}',
     ':host([data-theme="dark"]) .cg2-btn{background:#22304a;color:#cbd5e1;border-color:#334155}',
     ':host([data-theme="dark"]) .cg2-btn:hover:not(:disabled){background:#2c3a4f;border-color:#475569}',
@@ -594,6 +630,17 @@ function createAutoSettings(options) {
     return node
   }
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild) }
+  // Re-rendering the long catalog/list rebuilds its DOM, which makes the
+  // scrollable ancestors snap back to the top. Snapshot and restore scrollTop
+  // around those rebuilds so adding a model deep in the list keeps position.
+  function scrollOf(node) { try { return node && typeof node.scrollTop === 'number' ? node.scrollTop : 0 } catch (_) { return 0 } }
+  function preservingScroll(nodes, fn) {
+    var tops = nodes.map(scrollOf)
+    try { fn() } finally {
+      nodes.forEach(function (node, i) { try { if (node) node.scrollTop = tops[i] } catch (_) {} })
+    }
+  }
+  function mutate(fn) { preservingScroll([panel, results], fn) }
   function button(text, action, cls) {
     var node = el('button', text)
     node.type = 'button'
@@ -731,6 +778,52 @@ function createAutoSettings(options) {
   candHead.appendChild(candidatesTitle)
   var candidates = el('div'); candidates.className = 'cg2-list'
 
+  // Reusable ordered candidate lists ("groups"), shared across every session in
+  // this browser/profile. Groups are a convenience: applying one writes the
+  // ordered routes to the current session config; deletions in DSH's own model
+  // list do not edit groups, but the failover engine skips routes that no longer
+  // resolve at switch time.
+  var GROUPS_KEY = 'dsh.contextGuard.groups.v1'
+  var groups = []
+  var groupWrap = el('div'); groupWrap.className = 'cg2-groups'
+  var groupSelect = el('select'); groupSelect.className = 'cg2-gselect'
+  groupSelect.setAttribute('aria-label', T('auto.groups'))
+  var groupApply = button(T('auto.groupApply'), applySelectedGroup, 'cg2-gbtn')
+  groupApply.type = 'button'; groupApply.disabled = true
+  var groupDelete = button(T('auto.groupDelete'), deleteSelectedGroup, 'cg2-gbtn cg2-danger')
+  groupDelete.type = 'button'; groupDelete.disabled = true
+  var groupNew = button('＋ ' + T('auto.groupSaveShort'), toggleGroupSave, 'cg2-gbtn')
+  groupNew.type = 'button'
+  var groupRow = el('div'); groupRow.className = 'cg2-grouprow'
+  groupRow.appendChild(groupSelect); groupRow.appendChild(groupNew)
+  groupRow.appendChild(groupApply); groupRow.appendChild(groupDelete)
+  // The name input only appears after clicking "Save as", so the section stays a
+  // single row until the user actually wants to store something.
+  var groupSaveRow = el('div'); groupSaveRow.className = 'cg2-grouprow cg2-saverow'
+  var groupName = el('input'); groupName.className = 'cg2-search'
+  groupName.type = 'text'
+  groupName.placeholder = T('auto.groupName')
+  groupName.setAttribute('aria-label', T('auto.groupName'))
+  var groupSave = button(T('auto.groupSave'), saveCurrentAsGroup, 'cg2-gbtn')
+  groupSave.type = 'button'; groupSave.disabled = true
+  var groupCancel = button(T('auto.groupCancel'), function () { setGroupSaving(false) }, 'cg2-gbtn')
+  groupCancel.type = 'button'
+  groupName.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') { event.preventDefault(); saveCurrentAsGroup() }
+    else if (event.key === 'Escape') { event.preventDefault(); setGroupSaving(false) }
+  })
+  groupSaveRow.appendChild(groupName); groupSaveRow.appendChild(groupSave); groupSaveRow.appendChild(groupCancel)
+  var groupSaving = false
+  function setGroupSaving(on) {
+    groupSaving = !!on
+    groupSaveRow.style.display = groupSaving ? 'flex' : 'none'
+    if (groupSaving) Promise.resolve().then(function () { try { groupName.focus() } catch (_) {} })
+    else groupName.value = ''
+  }
+  function toggleGroupSave() { setGroupSaving(!groupSaving) }
+  setGroupSaving(false)
+  groupWrap.appendChild(groupRow); groupWrap.appendChild(groupSaveRow)
+
   var catalogHeader = el('div'); catalogHeader.className = 'cg2-sec'
   var addTitle = el('h3', T('auto.addModels'))
   var reloadButton = button(T('auto.reload'), function () { loadCatalog(true) }, 'cg2-reload')
@@ -746,6 +839,7 @@ function createAutoSettings(options) {
   body.appendChild(enableRow)
   body.appendChild(status); body.appendChild(errors)
   body.appendChild(candHead); body.appendChild(candidates)
+  body.appendChild(groupWrap)
   body.appendChild(catalogHeader); body.appendChild(search); body.appendChild(results)
   panel.appendChild(body)
   overlay.appendChild(panel)
@@ -862,9 +956,121 @@ function createAutoSettings(options) {
     saveQueues.set(id, operation)
     showStatus()
   }
+
+  // ---- reusable candidate groups (browser-global, not per session) ----
+  function groupStore() {
+    try {
+      if (options.groupStorage) return options.groupStorage
+      return typeof localStorage !== 'undefined' ? localStorage : null
+    } catch (_) { return null }
+  }
+  function normalizeGroup(entry) {
+    if (!entry || typeof entry !== 'object') return null
+    var name = String(entry.name || '').trim().slice(0, 80)
+    if (!name || !Array.isArray(entry.candidates)) return null
+    var seen = new Set(), list = []
+    entry.candidates.forEach(function (c) {
+      if (!c || typeof c.provider !== 'string' || typeof c.model !== 'string') return
+      var item = { provider: c.provider, model: c.model }
+      var k = key(item)
+      if (!k || seen.has(k)) return
+      seen.add(k)
+      if (Number.isSafeInteger(c.window) && c.window > 0) item.window = c.window
+      if (list.length < 32) list.push(item)
+    })
+    if (!list.length) return null
+    return { id: String(entry.id || '').slice(0, 64) || ('g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)), name: name, candidates: list }
+  }
+  function loadGroups() {
+    var store = groupStore()
+    if (!store) { groups = []; renderGroups(); return }
+    try {
+      var parsed = JSON.parse(store.getItem(GROUPS_KEY) || '[]')
+      groups = (Array.isArray(parsed) ? parsed : []).map(normalizeGroup).filter(Boolean).slice(0, 50)
+    } catch (_) { groups = [] }
+    renderGroups()
+  }
+  function writeGroups() {
+    var store = groupStore()
+    if (!store) throw new Error(T('auto.groupStorageUnavailable'))
+    store.setItem(GROUPS_KEY, JSON.stringify(groups))
+  }
+  function selectedGroupId() { return groupSelect.value || '' }
+  function renderGroups() {
+    var chosen = selectedGroupId()
+    clear(groupSelect)
+    var placeholder = el('option', T('auto.groupChoose'))
+    placeholder.value = ''
+    placeholder.disabled = true
+    groupSelect.appendChild(placeholder)
+    groups.forEach(function (g) {
+      var option = el('option', g.name + ' (' + g.candidates.length + ')')
+      option.value = g.id
+      groupSelect.appendChild(option)
+    })
+    var exists = groups.some(function (g) { return g.id === chosen })
+    groupSelect.value = exists ? chosen : ''
+    groupApply.disabled = !exists
+    groupDelete.disabled = !exists
+    groupSave.disabled = draft.candidates.length === 0
+  }
+  function saveCurrentAsGroup() {
+    try {
+      if (!draft.candidates.length) return
+      var name = groupName.value.trim() || T('auto.groupDefaultName')
+      var existing = groups.find(function (g) { return g.name === name })
+      var normalized = normalizeGroup({ id: existing ? existing.id : '', name: name, candidates: draft.candidates })
+      if (!normalized) return
+      if (existing) existing.candidates = normalized.candidates
+      else groups.unshift(normalized)
+      groups = groups.slice(0, 50)
+      writeGroups()
+      groupName.value = ''
+      renderGroups()
+      // renderGroups() rebuilt the <select>; re-select the (new or overwritten) group.
+      groupSelect.value = normalized.id
+      groupApply.disabled = false
+      groupDelete.disabled = false
+      setGroupSaving(false)
+    } catch (error) { errorText = T('auto.groupSaveFailed') + message(error); showStatus() }
+  }
+  function applySelectedGroup() {
+    if (!sessionId) return
+    var g = groups.find(function (x) { return x.id === selectedGroupId() })
+    if (!g) return
+    // Deep copy so later edits never mutate the stored group; de-duplicate
+    // while preserving the group's order.
+    var seen = new Set(), list = []
+    g.candidates.forEach(function (c) {
+      var k = key(c)
+      if (!k || seen.has(k)) return
+      seen.add(k)
+      list.push({ provider: c.provider, model: c.model, ...(c.window ? { window: c.window } : {}) })
+    })
+    if (!list.length) return
+    draft.candidates = list
+    // Applying a group changes ONLY the ordered candidates: whether failover is
+    // enabled stays exactly as this session already had it.
+    mutate(function () {
+      persist()
+      renderCandidates()
+      renderCatalog(true)
+    })
+  }
+  function deleteSelectedGroup() {
+    var id = selectedGroupId()
+    groups = groups.filter(function (g) { return g.id !== id })
+    try { writeGroups() } catch (error) { errorText = T('auto.groupSaveFailed') + message(error); showStatus() }
+    renderGroups()
+  }
+
+  // Which candidate rows are currently showing the inline window editor. Keyed
+  // by route (not a per-row closure local) so it survives the re-render that
+  // opening the editor triggers.
+  var editingWindows = new Set()
   function renderCandidates() {
     clear(candidates)
-    if (!draft.candidates.length) { candidates.appendChild(el('div', T('auto.noCandidates'), 'cg2-empty')); return }
+    if (!draft.candidates.length) { editingWindows.clear(); candidates.appendChild(el('div', T('auto.noCandidates'), 'cg2-empty')); renderGroups(); return }
     draft.candidates.forEach(function (candidate, index) {
       var row = el('div'); row.className = 'cg2-cand'
       var badge = el('div', String(index + 1), 'cg2-badge')
@@ -876,7 +1082,7 @@ function createAutoSettings(options) {
         if (!index) return
         var list = draft.candidates
         list[index] = list[index - 1]; list[index - 1] = candidate
-        persist(); renderCandidates()
+        mutate(function () { persist(); renderCandidates() })
       }, 'cg2-icon')
       up.disabled = index === 0
       up.title = T('auto.up'); up.setAttribute('aria-label', T('auto.up'))
@@ -884,33 +1090,78 @@ function createAutoSettings(options) {
         if (index >= draft.candidates.length - 1) return
         var list = draft.candidates
         list[index] = list[index + 1]; list[index + 1] = candidate
-        persist(); renderCandidates()
+        mutate(function () { persist(); renderCandidates() })
       }, 'cg2-icon')
       down.disabled = index === draft.candidates.length - 1
       down.title = T('auto.down'); down.setAttribute('aria-label', T('auto.down'))
-      var winWrap = el('label'); winWrap.className = 'cg2-win'
-      var input = el('input')
-      input.type = 'text'
-      input.inputMode = 'numeric'
-      input.value = candidate.window ? String(candidate.window) : ''
-      var known = knownWindow(candidate)
-      input.placeholder = known ? String(known) + ' ' + T('auto.windowAuto') : T('auto.windowUnknown')
-      input.title = known ? T('auto.windowAutoTip') : T('auto.windowTokens')
-      input.setAttribute('aria-label', candidate.provider + '/' + candidate.model + ' ' + T('auto.windowTokens'))
-      input.addEventListener('change', function () {
+      // Compact window display: a pill shows the effective window; click it to
+      // type an override inline. This keeps the row from crowding four controls
+      // plus a 108px input into one line and stops the placeholder being clipped.
+      var winWrap = el('div'); winWrap.className = 'cg2-win'
+      var routeKey = key(candidate)
+      function commitWindow(input) {
         var text = input.value.trim()
         var n = Number(text)
         if (text && (!/^\d+$/.test(text) || !Number.isSafeInteger(n) || n <= 0)) {
           input.setAttribute('aria-invalid', 'true')
           errorText = T('auto.windowInvalid')
-          showStatus(); return
+          showStatus(); return false
         }
         input.removeAttribute('aria-invalid')
         if (text) candidate.window = n; else delete candidate.window
         persist()
-      })
-      winWrap.appendChild(input)
-      var remove = button('×', function () { draft.candidates.splice(index, 1); persist(); renderCandidates(); renderCatalog() }, 'cg2-icon cg2-danger')
+        editingWindows.delete(routeKey)
+        mutate(renderCandidates)
+        return true
+      }
+      function buildWin() {
+        clear(winWrap)
+        if (editingWindows.has(routeKey)) {
+          var input = el('input')
+          input.type = 'text'
+          input.inputMode = 'numeric'
+          input.className = 'cg2-wininput'
+          input.value = candidate.window ? String(candidate.window) : ''
+          var knownEdit = knownWindow(candidate)
+          input.placeholder = knownEdit ? String(knownEdit) : T('auto.windowTokensShort')
+          input.title = knownEdit ? T('auto.windowAutoTip') : T('auto.windowTokens')
+          input.setAttribute('aria-label', candidate.provider + '/' + candidate.model + ' ' + T('auto.windowTokens'))
+          var ok = button('✓', function () { commitWindow(input) }, 'cg2-icon cg2-wedit')
+          ok.title = T('auto.windowConfirm'); ok.setAttribute('aria-label', T('auto.windowConfirm'))
+          input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); commitWindow(input) }
+            else if (e.key === 'Escape') { editingWindows.delete(routeKey); mutate(renderCandidates) }
+          })
+          winWrap.appendChild(input); winWrap.appendChild(ok)
+          // Focus after it is in the DOM.
+          Promise.resolve().then(function () { try { input.focus(); input.select() } catch (_) {} })
+          return
+        }
+        var known = knownWindow(candidate)
+        var effective = candidate.window || known
+        var chip = el('button')
+        chip.type = 'button'
+        chip.className = 'cg2-wchip' + (candidate.window ? ' custom' : effective ? '' : ' unknown')
+        var labelText = effective
+          ? fmtShort(effective) + (candidate.window ? ' ✎' : '')
+          : '＋ ' + T('auto.windowSet')
+        var chipLabel = el('span', labelText, 'wt')
+        chip.appendChild(chipLabel)
+        chip.title = candidate.window
+          ? T('auto.windowCustomTip') + candidate.window
+          : known ? T('auto.windowAutoTip') : T('auto.windowTokens')
+        chip.setAttribute('aria-label', chip.title)
+        chip.addEventListener('click', function () { editingWindows.add(routeKey); mutate(renderCandidates) })
+        winWrap.appendChild(chip)
+      }
+      buildWin()
+      var remove = button('×', function () {
+        mutate(function () {
+          editingWindows.delete(routeKey)
+          draft.candidates.splice(index, 1)
+          persist(); renderCandidates(); renderCatalog(true)
+        })
+      }, 'cg2-icon cg2-danger')
       remove.title = T('auto.remove'); remove.setAttribute('aria-label', T('auto.remove'))
       tools.appendChild(up); tools.appendChild(down); tools.appendChild(winWrap); tools.appendChild(remove)
       row.appendChild(badge); row.appendChild(meta); row.appendChild(tools)
@@ -934,7 +1185,8 @@ function createAutoSettings(options) {
     })
     return out
   }
-  function renderCatalog() {
+  function renderCatalog(preserveScroll) {
+    var saved = preserveScroll ? scrollOf(results) : null
     clear(results)
     if (loading) { results.appendChild(el('div', T('auto.loading'), 'cg2-note')); return }
     var query = search.value.trim().toLowerCase()
@@ -958,11 +1210,12 @@ function createAutoSettings(options) {
       add.addEventListener('click', function () {
         if (!sessionId || draft.candidates.some(function (c) { return key(c) === key(item) })) return
         draft.candidates.push({ provider: item.provider, model: item.model })
-        persist(); renderCandidates(); renderCatalog()
+        mutate(function () { persist(); renderCandidates(); renderCatalog(true) })
       })
       row.appendChild(label); row.appendChild(add); results.appendChild(row)
     })
     if (matches.length > 100) results.appendChild(el('div', T('auto.first100'), 'cg2-note'))
+    if (saved !== null) results.scrollTop = saved
   }
   function loadCatalog(force) {
     if (disposed || !opened || (catalogLoaded && !force)) return
@@ -999,6 +1252,15 @@ function createAutoSettings(options) {
     enableSub.textContent = T('auto.perSessionHint')
     enabled.setAttribute('aria-label', T('auto.enable'))
     candidatesTitle.textContent = T('auto.candidates')
+    groupSelect.setAttribute('aria-label', T('auto.groups'))
+    groupApply.textContent = T('auto.groupApply')
+    groupDelete.textContent = T('auto.groupDelete')
+    groupNew.textContent = '＋ ' + T('auto.groupSaveShort')
+    groupSave.textContent = T('auto.groupSave')
+    groupCancel.textContent = T('auto.groupCancel')
+    groupName.placeholder = T('auto.groupName')
+    groupName.setAttribute('aria-label', T('auto.groupName'))
+    renderGroups()
     addTitle.textContent = T('auto.addModels')
     reloadButton.textContent = T('auto.reload')
     search.placeholder = T('auto.search')
@@ -1021,6 +1283,7 @@ function createAutoSettings(options) {
       enabled.setAttribute('aria-checked', draft.enabled ? 'true' : 'false')
       updateLauncher()
       updateMeter()
+      renderGroups() // Save-group availability follows the current draft.
       sessionTag.textContent = sessionId || T('auto.noSession')
       sessionTag.title = sessionId || ''
       if (opened && changed) { renderCandidates(); renderCatalog() }
@@ -1058,6 +1321,7 @@ function createAutoSettings(options) {
   }
   root.addEventListener('keydown', keydown)
   refresh()
+  loadGroups()
   return {
     refresh: refresh,
     mount: mountLauncher,
@@ -1135,9 +1399,14 @@ function createAutoEngine(o) {
     if (s.flight || !s.binding || !s.cfg.enabled || disposed) return
     s.flight = true
     var token = s.generation, expected = key(selection(id))
+    // The route WE are currently trying out: between selectModel() and its
+    // confirmation the projection already reads the new route, while `expected`
+    // still names the failed source model. valid() must accept either.
+    var attemptRoute = null
     function valid() {
       if (disposed || token !== s.generation || !s.binding || !s.cfg.enabled) return false
-      if (!o.isCurrent(id) || key(selection(id)) !== expected) { cancel(s, T('st.userChanged')); return false }
+      var current = key(selection(id))
+      if (!o.isCurrent(id) || (current !== expected && current !== attemptRoute)) { cancel(s, T('st.userChanged')); return false }
       return true
     }
     try {
@@ -1158,7 +1427,16 @@ function createAutoEngine(o) {
       var at = candidates.findIndex(function (x) { return key(x) === expected })
       var ordered = at < 0 ? candidates : candidates.slice(at + 1).concat(candidates.slice(0, at + 1))
       try { o.begin(id) } catch (_) {}
-      var candidate = null, candidateWindow = null
+      var candidate = null, candidateWindow = null, target = null, picked = null, confirmed = false, result = null
+      var oldRoute = expected
+      var succeeded = false
+      var triedRoutes = []
+      // One pass over the ordered routes. A route may be unusable not just for
+      // the upfront checks (unknown window, already failed, compact failure),
+      // but also at switch time when the model was deleted or is unavailable:
+      // mark that route failed for this chain and fall through to the next
+      // candidate instead of terminating the whole failover.
+      outer:
       for (var i = 0; i < ordered.length; i++) {
         if (!valid()) return
         var item = ordered[i], route = key(item), win = windowOf(item)
@@ -1179,46 +1457,66 @@ function createAutoEngine(o) {
             continue
           }
         }
-        candidate = item; candidateWindow = win; break
-      }
-      if (!candidate) { status(s, 'stopped', T('st.noCandidate')); return }
-      var target = { provider: candidate.provider, model: candidate.model }
-      var oldRoute = expected
-      status(s, 'switching', T('st.switching') + key(target))
+        candidate = item; candidateWindow = win
+        target = { provider: candidate.provider, model: candidate.model }
+        triedRoutes.push(route)
+        attemptRoute = route
+        status(s, 'switching', T('st.switching') + key(target))
 
-      var picked
-      try { picked = await o.selectModel(id, target) } catch (error) {
-        if (token !== s.generation || disposed || !s.binding || !s.cfg.enabled) return
-        try { o.end(id) } catch (_) {}
-        status(s, 'error', T('st.switchFailed') + String(error.message || error), error); return
-      }
-      if (token !== s.generation || disposed || !s.binding || !s.cfg.enabled) return
-      var nowRoute = key(selection(id))
-      if (nowRoute !== oldRoute && nowRoute !== key(target)) { cancel(s, T('st.otherModel')); return }
-      expected = key(target)
-      if (picked && picked.ok === false) {
-        try { o.end(id) } catch (_) {}
-        status(s, 'error', T('st.switchFailed') + errorText(picked)); return
-      }
-      if (!o.isCurrent(id)) { cancel(s, T('st.leftSession')); return }
-      var confirmed = false
-      try { confirmed = await o.assertSelection(id, target, 'auto-failover') } catch (error) { confirmed = false }
-      if (!valid()) return
-      try { o.end(id) } catch (_) {}
-      if (confirmed !== true) { status(s, 'error', T('st.notConfirmed')); return }
-      try { o.commit(id, target) } catch (_) {}
-      status(s, 'continuing', T('st.continuing'))
-      var result
-      try {
-        result = await s.binding.session.prompt([{ type: 'text', text: continuationText() }], 'queue')
-      } catch (error) {
+        try { picked = await o.selectModel(id, target) } catch (error) {
+          if (!valid()) return
+          // Model removed/unavailable on the provider: remember it for this
+          // chain and try the next configured candidate.
+          s.failed.add(route)
+          attemptRoute = null
+          status(s, 'waiting', T('st.switchSkipping') + String((error && error.message) || error))
+          continue
+        }
         if (!valid()) return
-        status(s, 'error', T('st.continueRejected') + String(error.message || error), error); return
+        var nowRoute = key(selection(id))
+        if (nowRoute !== oldRoute && nowRoute !== key(target)) { cancel(s, T('st.otherModel')); return }
+        if (picked && picked.ok === false) {
+          s.failed.add(route)
+          attemptRoute = null
+          status(s, 'waiting', T('st.switchSkipping') + errorText(picked))
+          continue
+        }
+        if (!o.isCurrent(id)) { cancel(s, T('st.leftSession')); return }
+        try { confirmed = await o.assertSelection(id, target, 'auto-failover') } catch (error) { confirmed = false }
+        if (!valid()) return
+        if (confirmed !== true) {
+          s.failed.add(route)
+          attemptRoute = null
+          status(s, 'waiting', T('st.switchSkipping') + T('st.notConfirmed'))
+          continue
+        }
+        attemptRoute = null
+        // Only a CONFIRMED selection becomes the new baseline for valid(): this
+        // stops a failed candidate from making the next loop iteration look like
+        // a manual model change by the user.
+        expected = key(target)
+        try { o.end(id) } catch (_) {}
+        try { o.commit(id, target) } catch (_) {}
+        status(s, 'continuing', T('st.continuing'))
+        try {
+          result = await s.binding.session.prompt([{ type: 'text', text: continuationText() }], 'queue')
+        } catch (error) {
+          if (!valid()) return
+          status(s, 'error', T('st.continueRejected') + String(error.message || error), error); return
+        }
+        if (!valid()) return
+        if (!result || result.ok !== true || !result.value || result.value.accepted !== true) {
+          status(s, 'error', T('st.continueRejected') + errorText(result)); return
+        }
+        succeeded = true
+        break outer
+      }
+      if (!succeeded) {
+        try { o.end(id) } catch (_) {}
+        status(s, 'stopped', triedRoutes.length ? T('st.allSwitchesFailed') : T('st.noCandidate'))
+        return
       }
       if (!valid()) return
-      if (!result || result.ok !== true || !result.value || result.value.accepted !== true) {
-        status(s, 'error', T('st.continueRejected') + errorText(result)); return
-      }
       var afterPrompt = snapshot(s)
       if (afterPrompt && afterPrompt.promptError) status(s, 'error', T('st.continueRejected') + errorText({ error: afterPrompt.promptError.error }))
       else status(s, 'continued', T('st.continued') + key(target))

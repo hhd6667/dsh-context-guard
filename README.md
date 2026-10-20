@@ -32,18 +32,21 @@ The **Auto switch** button in the composer toolbar opens settings for the curren
 - enable or disable automatic failover independently for each conversation;
 - choose candidates from the live model catalog;
 - drag-free reorder candidates using up/down controls (top = highest priority);
-- manually specify a context window in tokens for a model not in the built-in table.
+- manually specify a context window in tokens for a model not in the built-in table;
+- save the current ordered list as a named **candidate group** and re-apply it to any session. Groups are shared across every session in this browser/profile. Applying a group only replaces the ordered candidates; it never toggles failover on by itself. A route later removed from DSH's model list is simply skipped at failover time (unknown window, rejected switch, or unconfirmed selection), so a stale group never blocks the chain and you do not have to prune it by hand.
+
+Adding a model or moving candidates up/down no longer snaps a long catalog/list back to the top; the scroll position is preserved.
 
 When a live turn terminates with `QUOTA`, `ACCOUNT_QUOTA`, `RATE_LIMIT`, HTTP 429, or an explicit insufficient-balance/quota message, the plugin:
 
 1. waits until the current turn is no longer running;
-2. chooses the next candidate, skipping routes that already failed in the current chain;
+2. chooses the next candidate, skipping routes that already failed in the current chain or cannot be switched to (removed/unavailable model, unknown window);
 3. checks context pressure against 70% of the candidate window;
 4. runs `/compact` first when needed and verifies that pressure actually dropped;
-5. switches and verifies the resulting model selection;
+5. switches and verifies the resulting model selection, falling through to the next candidate when a switch is rejected or not confirmed;
 6. sends exactly one queued continuation message asking the model to resume from existing progress without repeating completed work.
 
-Failover is disabled by default. Settings are stored per session in the browser's `localStorage`.
+Failover is disabled by default. Per-session settings and the shared candidate groups are stored in the browser's `localStorage`.
 
 ## Context windows
 
