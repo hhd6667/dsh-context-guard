@@ -57,9 +57,12 @@ Failover is disabled by default. Per-session settings and the shared candidate g
 The browser model catalog does not carry a per-model `contextWindow`. The plugin resolves a window from these sources, in order:
 
 1. **A value you typed in the candidate row** (highest priority; blank uses the detected value).
-2. **The windows DSH already resolved for its own Models settings** — read once, read-only, through `remote.settings.describe()`. This covers provider profiles with explicit `contextWindow` entries and adapter defaults, and is refreshed when the panel opens.
+2. **A window DSH's Models settings declare explicitly** for that exact `provider/model`, or failing that for that model id at the settings root — read once, read-only, through `remote.settings.describe()`, and refreshed when the panel opens.
 3. **The shipped table** in `DEFAULTS` near the top of [`dsh/client.js`](dsh/client.js), keyed by exact `provider/model`, then model ID, then conservative substring patterns.
-4. If nothing resolves, the window stays **unknown**.
+4. **A provider-wide default** (`defaultContextWindow` of an OpenAI-compatible profile) for a model that profile lists without its own window. This is only a guess, so it ranks last.
+5. If nothing resolves, the window stays **unknown**.
+
+Model ids are not unique across providers: the same `deepseek-flash` can be listed by several profiles with different windows. Provider-scoped values therefore only ever apply to their own provider, and a profile default never overrides the shipped table — that combination previously made a 1M model look like a 262K one.
 
 Configured or detected windows are shown in the candidate row as a placeholder (`262144 auto`) and next to each catalog result (`· 262K`), so you can see what will be used before typing anything.
 
@@ -75,6 +78,8 @@ A typed override must be the model's **context window**, not its maximum output 
 DSH's context ring divides measured pressure by the ceiling stored in the session's newest real request (`request/context`). A model switch does not write that record — it only changes the saved selection — so for a moment after a switch the ring keeps showing the **previous** model's ceiling, even though the switch already succeeded.
 
 While the ring and the selected model disagree, the plugin shows a small chip next to **Auto switch** with the ceiling that actually applies now and your usage against it (for example `42% · 262K`; it turns red and reads `118% · over 262K` once usage passes that ceiling). Hovering it names both values. The chip disappears on its own as soon as the next request updates the ring.
+
+The chip only contradicts the ring when the plugin actually watched this session's model change **and** the ring has not been refreshed since. A ring that was updated by a later real request is server data and always wins, so a mis-sized model can never turn into a permanent red alarm.
 
 Because that disagreement is invisible for a second when two models share a ceiling, and because it ends the moment any request runs, the chip also stays up for about 12 seconds after **any** model switch as a neutral-colored confirmation of the ceiling now in effect. No chip means the ring already matches the selected model.
 

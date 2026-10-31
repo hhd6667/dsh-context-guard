@@ -221,45 +221,85 @@ window.__ModuleLoader__.load({
     // catalog omits this field, but remote.settings.describe() exposes the
     // schema-resolved provider profiles (defaults plus user overrides), often
     // under root `models` (DeepSeek adapters) or `providers.<id>.models`
-    // (OpenAI-compatible adapters). We build model-id -> positive windows and
-    // never mutate settings. User-specified candidate overrides still win.
-    var settingsWindows = new Map()
-    function rememberWindow(id, n) {
-      id = String(id || '').trim()
-      if (!id || typeof n !== 'number' || !Number.isSafeInteger(n) || n <= 0) return
-      if (!settingsWindows.has(id)) settingsWindows.set(id, n)
+    // (OpenAI-compatible adapters). We never mutate settings.
+    //
+    // Model ids are NOT unique across providers: `providers.x.models[]` and
+    // `providers.y.models[]` can both list `deepseek-flash` with different
+    // windows, and a provider-wide `defaultContextWindow` is only a guess. So we
+    // keep exact routes apart from bare ids and remember how trustworthy each
+    // number is; a guessed provider default must never shadow the shipped table
+    // or a value the user declared explicitly.
+    var RANK_EXPLICIT = 2
+    var RANK_PROVIDER_DEFAULT = 1
+    var routeWindows = new Map()   // 'provider/model' -> { window, rank }
+    var modelWindows = new Map()   // 'model' -> { window, rank }
+    function rememberIn(map, key, n, rank) {
+      key = String(key || '').trim()
+      if (!key || typeof n !== 'number' || !Number.isSafeInteger(n) || n <= 0) return false
+      var prev = map.get(key)
+      if (prev && prev.rank >= rank) return false
+      map.set(key, { window: n, rank: rank })
+      return true
     }
-    function harvestModelNode(node) {
+    function rememberWindow(id, provider, n, rank) {
+      // A declaration that came out of one provider profile is only meaningful
+      // for THAT provider: id-only model maps are how a different provider's
+      // window used to shadow the real ceiling (`deepseek-flash` is 1M on
+      // deepseek-official, but an OpenAI-compatible profile that lists the same
+      // id with a 262144 default would win). Only root-level declarations, which
+      // carry no provider context, are applied model-wide.
+      if (provider) return rememberIn(routeWindows, String(provider) + '/' + String(id), n, rank)
+      return rememberIn(modelWindows, id, n, rank)
+    }
+    function harvestModelNode(node, providerHint) {
       if (!node || typeof node !== 'object' || Array.isArray(node)) return
+      // A provider profile is not a model, even though it carries an id.
+      if (Array.isArray(node.models)) return
       var id = node.id != null ? node.id : node.model
-      if (id != null && node.contextWindow != null) rememberWindow(id, node.contextWindow)
+      if (id == null) return
+      if (node.contextWindow == null) return
+      var provider = node.provider || node.providerId || providerHint || null
+      rememberWindow(id, provider, node.contextWindow, RANK_EXPLICIT)
     }
-    function harvestSettingsValue(value, depth) {
+    // Models a profile does not enumerate are sized by its defaultContextWindow.
+    function harvestProfileDefault(profile, providerId) {
+      if (!profile || typeof profile !== 'object') return
+      if (!numberLike(profile.defaultContextWindow)) return
+      var models = Array.isArray(profile.models) ? profile.models : []
+      models.forEach(function (model) {
+        if (!model || typeof model !== 'object' || model.contextWindow != null) return
+        var id = model.id != null ? model.id : model.model
+        rememberWindow(id, providerId, profile.defaultContextWindow, RANK_PROVIDER_DEFAULT)
+      })
+    }
+    function harvestSettingsValue(value, depth, providerHint) {
       if (!value || typeof value !== 'object' || depth > 8) return
       if (Array.isArray(value)) {
         value.forEach(function (item) {
           if (item && typeof item === 'object') {
-            harvestModelNode(item)
-            harvestSettingsValue(item, depth + 1)
+            harvestModelNode(item, providerHint)
+            harvestSettingsValue(item, depth + 1, providerHint)
           }
         })
         return
       }
-      harvestModelNode(value)
-      // OpenAI-compatible profiles size undeclared models from their own
-      // defaultContextWindow; apply it so those models are usable as candidates
-      // even though their rows carry no explicit window.
-      if (numberLike(value.defaultContextWindow) && Array.isArray(value.models)) {
-        value.models.forEach(function (model) {
-          if (model && typeof model === 'object' && model.contextWindow == null) {
-            var id = model.id != null ? model.id : model.model
-            if (id != null) rememberWindow(id, value.defaultContextWindow)
-          }
-        })
-      }
+      harvestModelNode(value, providerHint)
+      harvestProfileDefault(value, providerHint)
       Object.keys(value).forEach(function (key) {
         var child = value[key]
-        if (child && typeof child === 'object') harvestSettingsValue(child, depth + 1)
+        if (!child || typeof child !== 'object') return
+        // `providers.<id>`: the KEY is the provider id, so it becomes the hint.
+        if (key === 'providers' || key === 'providerProfiles') {
+          Object.keys(child).forEach(function (pid) {
+            var profile = child[pid]
+            if (!profile || typeof profile !== 'object') return
+            harvestModelNode(profile, pid)
+            harvestProfileDefault(profile, pid)
+            harvestSettingsValue(profile, depth + 1, pid)
+          })
+          return
+        }
+        harvestSettingsValue(child, depth + 1, providerHint)
       })
     }
     function numberLike(n) { return typeof n === 'number' && isFinite(n) && n > 0 }
@@ -269,22 +309,38 @@ window.__ModuleLoader__.load({
         var response = await ns.describe()
         var value = response && response.ok === false ? null : (response && response.ok === true ? response.value : response)
         var namespaces = value && Array.isArray(value.namespaces) ? value.namespaces : []
-        var before = settingsWindows.size
+        var before = modelWindows.size + '/' + routeWindows.size
         namespaces.forEach(function (view) {
-          if (view && view.value && typeof view.value === 'object') harvestSettingsValue(view.value, 0)
+          if (view && view.value && typeof view.value === 'object') harvestSettingsValue(view.value, 0, null)
         })
-        if (settingsWindows.size !== before) console.info('[context-guard] loaded ' + (settingsWindows.size - before) + ' context window(s) from DSH model settings')
+        var after = modelWindows.size + '/' + routeWindows.size
+        if (after !== before) console.info('[context-guard] context windows from DSH model settings: ' + after)
       } catch (e) { console.warn('[context-guard] could not read configured context windows', e) }
     }
+    function pickWindow(map, key) {
+      var hit = key ? map.get(key) : null
+      return hit && hit.window > 0 ? hit : null
+    }
     function resolveWindowWithSettings(sel) {
+      var provider = sel && sel.provider
       var id = sel && sel.model
-      // A window the user configured in DSH's own Models settings is the most
-      // authoritative value available to the browser, so it wins over the
-      // shipped table; the table still covers models whose settings are default
-      // and whose profile the page does not expose.
-      if (id && settingsWindows.has(id)) return settingsWindows.get(id)
+      var route = provider && id ? String(provider) + '/' + String(id) : ''
+      // 1. A window the user declared explicitly for THIS route, or failing that
+      //    for this model id, is the most authoritative value available here.
+      var hit = pickWindow(routeWindows, route)
+      if (hit && hit.rank === RANK_EXPLICIT) return hit.window
+      hit = pickWindow(modelWindows, id)
+      if (hit && hit.rank === RANK_EXPLICIT) return hit.window
+      // 2. The shipped table encodes verified ceilings, so it outranks a
+      //    provider-wide default guess (this is what made DeepSeek V4.1 Flash
+      //    look like a 262K model on a profile that defaults to 262144).
       var built = resolveWindow(sel, DEFAULTS)
       if (typeof built === 'number' && built > 0) return built
+      // 3. Only now fall back to guesses derived from provider defaults.
+      hit = pickWindow(routeWindows, route)
+      if (hit) return hit.window
+      hit = pickWindow(modelWindows, id)
+      if (hit) return hit.window
       return null
     }
     // The settings namespace is an ARGUMENT, not a closure lookup: this helper
@@ -1719,6 +1775,7 @@ function createAutoEngine(o) {
       var holding = new Set()        // sessionId -> an assertSelection() loop owns the selection
       var epoch = new Map()          // monotonic decision counter; never reset on unbind
       var changedAt = new Map()      // sessionId -> Date.now() of the last observed model change
+      var ringAtChange = new Map()   // sessionId -> contextPressure.contextWindow seen at that moment
       var disposed = false
       var autoEngine = null
       var autoSettings = null
@@ -1805,7 +1862,19 @@ function createAutoEngine(o) {
           var window = resolveWindowWithSettings(sel)
           if (typeof window !== 'number' || !(window > 0)) return null
           var stale = window !== ringWindow
-          if (!stale && !(Date.now() - (changedAt.get(sessionId) || 0) < NOTICE_MS)) return null
+          if (stale) {
+            // Only contradict the ring when we actually watched this session's
+            // model change and the ring has not been refreshed since: that is the
+            // one case where the ring is known to lag (`request/context` is only
+            // appended by a real request, so `selectModel` alone leaves it on the
+            // previous ceiling). Without that evidence the ring is real data from
+            // the server and our own number is the guess — showing a red
+            // "188% over 262K" there is a false alarm.
+            if (!changedAt.has(sessionId)) return null
+            if (ringAtChange.get(sessionId) !== ringWindow) return null
+          } else if (!(Date.now() - (changedAt.get(sessionId) || 0) < NOTICE_MS)) {
+            return null
+          }
           var used = ps.projectedTokens != null ? ps.projectedTokens : ps.pressureTokens
           var percent = typeof used === 'number' && isFinite(used) && used >= 0
             ? Math.min(999, Math.round(used / window * 100))
@@ -1965,8 +2034,13 @@ function createAutoEngine(o) {
           // No change from what the user last confirmed: nothing to do.
           if (prevKey === key) return
           // A real model change: remember when, so the toolbar chip can confirm
-          // the new ceiling even when both models share one.
+          // the new ceiling even when both models share one. Also record the ring
+          // window at this instant: if the ring later moves off it, a real
+          // request/context has landed, which makes the ring authoritative.
           changedAt.set(sessionId, Date.now())
+          ringAtChange.set(sessionId, pressure && typeof pressure.contextWindow === 'number' && pressure.contextWindow > 0
+            ? pressure.contextWindow
+            : null)
 
           var fromSel = committedSel.get(sessionId)
           var usage = pressure && (pressure.projectedTokens != null ? pressure.projectedTokens : pressure.pressureTokens)
@@ -2084,6 +2158,7 @@ function createAutoEngine(o) {
         suppress.delete(sessionId)
         holding.delete(sessionId)
         changedAt.delete(sessionId)
+        ringAtChange.delete(sessionId)
         epoch.set(sessionId, (epoch.get(sessionId) || 0) + 1)
       }
 
@@ -2211,7 +2286,7 @@ function createAutoEngine(o) {
         try { if (domObserver) domObserver.disconnect() } catch (_) {}
         for (var s of Array.from(stops.values())) try { s() } catch (_) {}
         stops.clear(); committed.clear(); committedSel.clear(); pending.clear(); suppress.clear()
-        holding.clear(); epoch.clear(); changedAt.clear()
+        holding.clear(); epoch.clear(); changedAt.clear(); ringAtChange.clear()
         closeModal()
       }
     }
